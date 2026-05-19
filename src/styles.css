@@ -1,0 +1,420 @@
+:root {
+  color-scheme: light;
+  --canvas: #fcfcfc;
+  --paper: rgba(255, 255, 255, 0.86);
+  --paper-solid: #ffffff;
+  --ink: #0f172a;
+  --muted: #667085;
+  --faint: #98a2b3;
+  --line: rgba(20, 90, 255, 0.13);
+  --line-strong: rgba(20, 90, 255, 0.28);
+  --blue: #145aff;
+  --blue-soft: rgba(20, 90, 255, 0.08);
+  --danger: #c2413a;
+  --shadow: 0 16px 42px rgba(15, 23, 42, 0.1);
+  --shadow-soft: 0 8px 22px rgba(15, 23, 42, 0.06);
+  background: var(--canvas);
+  color: var(--ink);
+  font-family:
+    "Inter",
+    "Segoe UI",
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 620px;
+  background:
+    radial-gradient(circle at 74% 18%, rgba(121, 130, 255, 0.22), rgba(121, 130, 255, 0.08) 20%, transparent 48%),
+    radial-gradient(circle at 26% 14%, rgba(20, 90, 255, 0.12), transparent 34%),
+    linear-gradient(90deg, rgba(20, 90, 255, 0.034) 1px, transparent 1px),
+    linear-gradient(rgba(20, 90, 255, 0.03) 1px, transparent 1px),
+    var(--canvas);
+  background-size: auto, auto, 18px 18px, 18px 18px, auto;
+}
+
+body::before {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+  opacity: 0.42;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(15, 23, 42, 0.018) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(90deg, rgba(15, 23, 42, 0.014) 0 1px, transparent 1px 5px);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  outline: none;
+  padding: 7px 10px;
+}
+
+input:focus {
+  border-color: rgba(20, 90, 255, 0.42);
+  box-shadow: 0 0 0 3px rgba(20, 90, 255, 0.09);
+}
+
+.pathField {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 7px;
+  align-items: center;
+}
+
+.pathPicker {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper-solid);
+  color: var(--blue);
+  box-shadow: var(--shadow-soft);
+}
+
+.appShell.accountsOnly {
+  position: relative;
+  display: grid;
+  grid-template-rows: 54px 1fr 24px;
+  gap: 8px;
+  width: min(100vw, 760px);
+  height: min(100dvh, 540px);
+  min-height: 460px;
+  margin: 0 auto;
+  padding: 12px;
+}
+
+.headLine,
+.accountPanel,
+.statusBar {
+  position: relative;
+  z-index: 1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px) saturate(1.05);
+}
+
+.headLine {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 10px;
+}
+
+.productIcon,
+.addButton,
+.iconAction {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper-solid);
+  color: var(--blue);
+  box-shadow: var(--shadow-soft);
+}
+
+.productIcon,
+.addButton {
+  width: 34px;
+  height: 34px;
+}
+
+.accountPanel {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.statusBar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 24px;
+  border-radius: 8px;
+  padding: 0 10px;
+}
+
+.statusBar span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 66px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.055);
+  transition:
+    border-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    background 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.accountRow.active {
+  border-color: rgba(20, 90, 255, 0.42);
+  background:
+    linear-gradient(90deg, rgba(20, 90, 255, 0.1), rgba(255, 255, 255, 0.92) 34%),
+    var(--paper-solid);
+}
+
+.accountRow:hover {
+  transform: translateY(-1px);
+  border-color: var(--line-strong);
+}
+
+.accountName {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.accountName strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 780;
+  letter-spacing: -0.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountName span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountName small {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountName small b {
+  flex: 0 0 auto;
+  color: var(--blue);
+  font-weight: 740;
+}
+
+.rowActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.enableButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 74px;
+  height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper-solid);
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 760;
+  box-shadow: var(--shadow-soft);
+}
+
+.enableButton.enabled {
+  background: var(--blue);
+  color: #fff;
+}
+
+.iconAction {
+  width: 34px;
+  height: 34px;
+  color: var(--faint);
+}
+
+.iconAction:hover {
+  color: var(--blue);
+}
+
+.modalLayer {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  background: rgba(252, 252, 252, 0.58);
+  backdrop-filter: blur(10px);
+}
+
+.modalCard {
+  display: grid;
+  width: min(420px, calc(100vw - 40px));
+  gap: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: var(--shadow);
+  padding: 14px;
+}
+
+.modalCard header,
+.confirmActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.modalCard h2,
+.modalCard p {
+  margin: 0;
+}
+
+.modalCard h2 {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 780;
+  letter-spacing: -0.6px;
+}
+
+.modalCard header button,
+.confirmActions button {
+  min-height: 32px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: var(--paper-solid);
+  color: var(--muted);
+  padding: 0 10px;
+}
+
+.modalCard label {
+  display: grid;
+  gap: 5px;
+}
+
+.modalCard label span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 730;
+}
+
+.fieldTitle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.fieldTitle em {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modalPrimary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper-solid);
+  color: var(--blue);
+  font-weight: 760;
+}
+
+.deleteConfirm p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.deleteConfirm strong {
+  color: var(--ink);
+}
+
+.dangerButton {
+  color: var(--danger) !important;
+}
+
+@media (max-width: 640px) {
+  body {
+    min-width: 0;
+  }
+
+  .appShell.accountsOnly {
+    width: 100vw;
+    height: auto;
+    min-height: 100dvh;
+  }
+
+  .accountRow {
+    grid-template-columns: 1fr;
+  }
+
+  .rowActions {
+    justify-content: flex-start;
+  }
+}

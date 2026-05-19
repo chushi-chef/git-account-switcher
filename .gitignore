@@ -1,0 +1,43 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.log
+.DS_Store
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+
+# Local app data
+.git-account-switcher/
+profiles.json
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+
+# Package manager and build caches
+.npm/
+.pnpm-store/
+.yarn/
+.vite/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# Local design review drafts
+design-review/

@@ -1,0 +1,66 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { ActionReport, AppStatus, Profile } from "./types";
+
+declare global {
+  interface Window {
+    __TAURI_INTERNALS__?: unknown;
+  }
+}
+
+const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+const mockProfiles: Profile[] = [
+  {
+    name: "small",
+    gitUserName: "Your Name",
+    gitEmail: "12345678+yourname@users.noreply.github.com",
+    gitHubUser: "yourname",
+    protocol: "ssh",
+    sshHost: "github-small",
+    sshKeyPath: "C:\\Users\\you\\.ssh\\id_ed25519_small",
+  },
+];
+
+export async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (isTauri()) {
+    return invoke<T>(command, args);
+  }
+
+  await new Promise((resolve) => window.setTimeout(resolve, 160));
+  if (command === "get_status") {
+    return ({
+      gitAvailable: true,
+      gitVersion: "git version 2.x",
+      globalUserName: "preview-user",
+      globalUserEmail: "preview@example.com",
+      credentialHelper: "store",
+      profilesPath: "~/.git-account-switcher/profiles.json",
+      sshConfigPath: "~/.ssh/config",
+      repo: args?.repoPath
+        ? {
+            path: String(args.repoPath),
+            isRepo: true,
+            userName: "repo-user",
+            userEmail: "repo@example.com",
+            origin: "git@github.com:owner/repo.git",
+          }
+        : null,
+    } satisfies AppStatus) as T;
+  }
+  if (command === "list_profiles") {
+    return mockProfiles as T;
+  }
+  if (command === "save_profile") {
+    return ({ actions: ["Saved profile."], changed: true } satisfies ActionReport) as T;
+  }
+  if (command === "remove_profile") {
+    return ({ actions: ["Removed profile."], changed: true } satisfies ActionReport) as T;
+  }
+  if (command === "ensure_ssh_host") {
+    return ({ actions: ["Ensure SSH directory exists.", "Write SSH host alias."], changed: false } satisfies ActionReport) as T;
+  }
+  if (command === "activate_profile") {
+    return ({ actions: ["Preview activation.", "No credentials were deleted."], changed: false } satisfies ActionReport) as T;
+  }
+  throw new Error(`Preview mock does not implement ${command}`);
+}

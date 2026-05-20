@@ -67,12 +67,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download bundle artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: release-artifacts
-          merge-multiple: true
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -80,6 +74,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      - name: Download bundle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
 
       - name: Create updater manifest
         run: npm run release:manifest

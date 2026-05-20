@@ -3,6 +3,8 @@ name: Build desktop app
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
@@ -41,6 +43,9 @@ jobs:
 
       - name: Build Tauri bundle
         run: npm run tauri:build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
 
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
@@ -51,6 +56,8 @@ jobs:
             src-tauri/target/release/bundle/**/*.exe
             src-tauri/target/release/bundle/**/*.dmg
             src-tauri/target/release/bundle/**/*.app
+            src-tauri/target/release/bundle/**/*.app.tar.gz
+            src-tauri/target/release/bundle/**/*.sig
           if-no-files-found: warn
 
   release:
@@ -66,6 +73,20 @@ jobs:
           path: release-artifacts
           merge-multiple: true
 
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Create updater manifest
+        run: npm run release:manifest
+        env:
+          BUNDLE_DIR: release-artifacts
+          RELEASE_TAG: ${{ github.ref_name }}
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -76,3 +97,6 @@ jobs:
             release-artifacts/**/*.msi
             release-artifacts/**/*.exe
             release-artifacts/**/*.dmg
+            release-artifacts/**/*.app.tar.gz
+            release-artifacts/**/*.sig
+            release-artifacts/latest.json

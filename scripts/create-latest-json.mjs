@@ -7,7 +7,7 @@ const version = config.version;
 const tag = process.env.RELEASE_TAG || `v${version}`;
 const repository = process.env.RELEASE_REPOSITORY || "chushi-chef/git-account-switcher";
 const releaseBaseUrl = `https://github.com/${repository}/releases/download/${tag}`;
-const bundleDir = join(root, "src-tauri", "target", "release", "bundle");
+const bundleDir = process.env.BUNDLE_DIR || join(root, "src-tauri", "target", "release", "bundle");
 const platforms = {};
 
 function assetUrl(fileName) {
@@ -41,17 +41,42 @@ function newestFile(dir, predicate) {
     })[0] ?? null;
 }
 
-const windowsSetup = newestFile(join(bundleDir, "nsis"), (name) => name.endsWith("-setup.exe"));
+function newestFileDeep(dir, predicate) {
+  const matches = [];
+  const visit = (currentDir) => {
+    if (!existsSync(currentDir)) {
+      return;
+    }
+
+    for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
+      const fullPath = join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        visit(fullPath);
+      } else if (entry.isFile() && predicate(entry.name, fullPath)) {
+        matches.push(fullPath);
+      }
+    }
+  };
+
+  visit(dir);
+  return matches.sort((left, right) => basename(right).localeCompare(basename(left)))[0] ?? null;
+}
+
+const pickFile = process.env.BUNDLE_DIR ? newestFileDeep : newestFile;
+const windowsSetup = pickFile(join(bundleDir, "nsis"), (name) => name.endsWith("-setup.exe"))
+  ?? newestFileDeep(bundleDir, (name) => name.endsWith("-setup.exe"));
 if (windowsSetup) {
   addPlatform("windows-x86_64", windowsSetup);
 }
 
-const macIntel = newestFile(join(bundleDir, "macos"), (name) => name.endsWith(".app.tar.gz") && name.includes("x64"));
+const macIntel = pickFile(join(bundleDir, "macos"), (name) => name.endsWith(".app.tar.gz") && name.includes("x64"))
+  ?? newestFileDeep(bundleDir, (name) => name.endsWith(".app.tar.gz") && name.includes("x64"));
 if (macIntel) {
   addPlatform("darwin-x86_64", macIntel);
 }
 
-const macApple = newestFile(join(bundleDir, "macos"), (name) => name.endsWith(".app.tar.gz") && name.includes("aarch64"));
+const macApple = pickFile(join(bundleDir, "macos"), (name) => name.endsWith(".app.tar.gz") && name.includes("aarch64"))
+  ?? newestFileDeep(bundleDir, (name) => name.endsWith(".app.tar.gz") && name.includes("aarch64"));
 if (macApple) {
   addPlatform("darwin-aarch64", macApple);
 }

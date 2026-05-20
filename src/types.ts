@@ -1,5 +1,7 @@
 export type Protocol = "ssh" | "https";
 export type Scope = "global" | "repo";
+export type AppLanguage = "zh-CN" | "en";
+export type AppTheme = "system" | "light" | "dark";
 
 export interface Profile {
   name: string;
@@ -21,14 +23,21 @@ export interface RepoStatus {
 }
 
 export interface AppStatus {
+  appVersion: string;
   gitAvailable: boolean;
   gitVersion?: string | null;
   globalUserName?: string | null;
   globalUserEmail?: string | null;
   credentialHelper?: string | null;
   profilesPath: string;
+  settingsPath: string;
   sshConfigPath: string;
   repo?: RepoStatus | null;
+}
+
+export interface AppSettings {
+  language: AppLanguage;
+  theme: AppTheme;
 }
 
 export interface ActionReport {

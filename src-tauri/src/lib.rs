@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
 };
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use thiserror::Error;
 
 #[cfg(windows)]
@@ -56,12 +56,14 @@ struct RepoStatus {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppStatus {
+    app_version: String,
     git_available: bool,
     git_version: Option<String>,
     global_user_name: Option<String>,
     global_user_email: Option<String>,
     credential_helper: Option<String>,
     profiles_path: String,
+    settings_path: String,
     ssh_config_path: String,
     repo: Option<RepoStatus>,
 }
@@ -71,6 +73,22 @@ struct AppStatus {
 struct ActionReport {
     actions: Vec<String>,
     changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppSettings {
+    language: String,
+    theme: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            language: "zh-CN".into(),
+            theme: "system".into(),
+        }
+    }
 }
 
 fn home_dir() -> AppResult<PathBuf> {
@@ -83,6 +101,10 @@ fn config_dir() -> AppResult<PathBuf> {
 
 fn profiles_path() -> AppResult<PathBuf> {
     Ok(config_dir()?.join("profiles.json"))
+}
+
+fn settings_path() -> AppResult<PathBuf> {
+    Ok(config_dir()?.join("settings.json"))
 }
 
 fn ssh_config_path() -> AppResult<PathBuf> {
@@ -113,6 +135,55 @@ fn save_profiles_inner(profiles: &BTreeMap<String, Profile>) -> AppResult<()> {
     ensure_config_dir()?;
     let json = serde_json::to_string_pretty(profiles)?;
     fs::write(profiles_path()?, json)?;
+    Ok(())
+}
+
+fn load_settings_inner() -> AppResult<AppSettings> {
+    ensure_config_dir()?;
+    let path = settings_path()?;
+    if !path.exists() {
+        return Ok(AppSettings::default());
+    }
+
+    let raw = fs::read_to_string(path)?;
+    if raw.trim().is_empty() {
+        return Ok(AppSettings::default());
+    }
+
+    let settings: AppSettings = serde_json::from_str(&raw)?;
+    validate_settings(&settings)?;
+    Ok(settings)
+}
+
+fn save_settings_inner(settings: &AppSettings) -> AppResult<()> {
+    validate_settings(settings)?;
+    ensure_config_dir()?;
+    let json = serde_json::to_string_pretty(settings)?;
+    fs::write(settings_path()?, json)?;
+    Ok(())
+}
+
+fn validate_settings(settings: &AppSettings) -> AppResult<()> {
+    match settings.language.as_str() {
+        "zh-CN" | "en" => {}
+        other => {
+            return Err(AppError::Message(format!(
+                "Unsupported language setting: {}",
+                other
+            )));
+        }
+    }
+
+    match settings.theme.as_str() {
+        "system" | "light" | "dark" => {}
+        other => {
+            return Err(AppError::Message(format!(
+                "Unsupported theme setting: {}",
+                other
+            )));
+        }
+    }
+
     Ok(())
 }
 
@@ -237,7 +308,13 @@ fn derived_host_alias(profile: &Profile, platform_host: &str) -> String {
         .as_deref()
         .filter(|value| !value.trim().is_empty() && value.trim() != platform_host)
         .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| format!("{}-{}", platform_prefix(platform_host), slugify(&profile.git_user_name)))
+        .unwrap_or_else(|| {
+            format!(
+                "{}-{}",
+                platform_prefix(platform_host),
+                slugify(&profile.git_user_name)
+            )
+        })
 }
 
 fn host_line_hosts(line: &str) -> Option<Vec<String>> {
@@ -246,7 +323,11 @@ fn host_line_hosts(line: &str) -> Option<Vec<String>> {
     if !keyword.eq_ignore_ascii_case("Host") {
         return None;
     }
-    Some(rest.split_whitespace().map(|value| value.to_string()).collect())
+    Some(
+        rest.split_whitespace()
+            .map(|value| value.to_string())
+            .collect(),
+    )
 }
 
 fn find_host_block(lines: &[String], host: &str) -> Option<(usize, usize)> {
@@ -267,7 +348,11 @@ fn find_host_block(lines: &[String], host: &str) -> Option<(usize, usize)> {
     None
 }
 
-fn find_block_by_key(lines: &[String], platform_host: &str, key_path: &str) -> AppResult<Option<(usize, usize)>> {
+fn find_block_by_key(
+    lines: &[String],
+    platform_host: &str,
+    key_path: &str,
+) -> AppResult<Option<(usize, usize)>> {
     let target_key = normalize_key_path(key_path)?;
     let mut index = 0;
     while index < lines.len() {
@@ -313,7 +398,13 @@ fn set_host_line(lines: &mut [String], block_start: usize, host: &str) {
     lines[block_start] = format!("Host {}", host);
 }
 
-fn set_directive(lines: &mut Vec<String>, start: usize, end: usize, key: &str, value: &str) -> usize {
+fn set_directive(
+    lines: &mut Vec<String>,
+    start: usize,
+    end: usize,
+    key: &str,
+    value: &str,
+) -> usize {
     for index in (start + 1)..end {
         let trimmed = lines[index].trim();
         let directive = trimmed
@@ -356,7 +447,11 @@ fn profile_matches_key(profile: &Profile, platform_host: &str, key_path: &str) -
         && normalize_key_path(profile_key)? == normalize_key_path(key_path)?)
 }
 
-fn switch_ssh_identity_inner(profile: &Profile, all_profiles: &[Profile], what_if: bool) -> AppResult<ActionReport> {
+fn switch_ssh_identity_inner(
+    profile: &Profile,
+    all_profiles: &[Profile],
+    what_if: bool,
+) -> AppResult<ActionReport> {
     let platform_host = profile
         .platform_host
         .as_deref()
@@ -383,7 +478,10 @@ fn switch_ssh_identity_inner(profile: &Profile, all_profiles: &[Profile], what_i
     let mut actions = Vec::new();
 
     if what_if {
-        actions.push(format!("Would switch Host {} to {}", platform_host, key_path));
+        actions.push(format!(
+            "Would switch Host {} to {}",
+            platform_host, key_path
+        ));
         return Ok(ActionReport {
             actions,
             changed: false,
@@ -418,10 +516,23 @@ fn switch_ssh_identity_inner(profile: &Profile, all_profiles: &[Profile], what_i
                         platform_host, active_key
                     ))
                 })?;
-            let alias = unique_alias(&lines, &derived_host_alias(owner, &platform_host), &platform_host);
+            let alias = unique_alias(
+                &lines,
+                &derived_host_alias(owner, &platform_host),
+                &platform_host,
+            );
             set_host_line(&mut lines, active_start, &alias);
-            let next_end = set_directive(&mut lines, active_start, active_end, "HostName", &platform_host);
-            actions.push(format!("Renamed active Host {} to {}", platform_host, alias));
+            let next_end = set_directive(
+                &mut lines,
+                active_start,
+                active_end,
+                "HostName",
+                &platform_host,
+            );
+            actions.push(format!(
+                "Renamed active Host {} to {}",
+                platform_host, alias
+            ));
             if next_end != active_end {
                 // The insertion happened inside the old active block, so cached ranges are stale. We only
                 // search fresh ranges after this point.
@@ -437,7 +548,12 @@ fn switch_ssh_identity_inner(profile: &Profile, all_profiles: &[Profile], what_i
         let _ = set_directive(&mut lines, target_start, end, "IdentityFile", key_path);
         actions.push(format!("Promoted {} to Host {}", key_path, platform_host));
     } else {
-        if !lines.is_empty() && !lines.last().map(|line| line.trim().is_empty()).unwrap_or(false) {
+        if !lines.is_empty()
+            && !lines
+                .last()
+                .map(|line| line.trim().is_empty())
+                .unwrap_or(false)
+        {
             lines.push(String::new());
         }
         lines.extend([
@@ -495,7 +611,11 @@ fn ensure_ssh_host_inner(profile: &Profile, what_if: bool) -> AppResult<ActionRe
 
     let actions = vec![
         format!("Ensure SSH directory exists: {}", ssh_dir.display()),
-        format!("Write SSH host alias '{}' to {}", ssh_host, ssh_config.display()),
+        format!(
+            "Write SSH host alias '{}' to {}",
+            ssh_host,
+            ssh_config.display()
+        ),
     ];
 
     if what_if {
@@ -588,14 +708,33 @@ fn get_status(repo_path: Option<String>) -> Result<AppStatus, String> {
         .map(|path| repo_status(Path::new(&path)));
 
     Ok(AppStatus {
+        app_version: env!("CARGO_PKG_VERSION").into(),
         git_available: git_version.is_some(),
         git_version,
         global_user_name: git_optional(&["config", "--global", "user.name"], None),
         global_user_email: git_optional(&["config", "--global", "user.email"], None),
         credential_helper: git_optional(&["config", "--global", "credential.helper"], None),
         profiles_path: profiles_path().map_err(String::from)?.display().to_string(),
-        ssh_config_path: ssh_config_path().map_err(String::from)?.display().to_string(),
+        settings_path: settings_path().map_err(String::from)?.display().to_string(),
+        ssh_config_path: ssh_config_path()
+            .map_err(String::from)?
+            .display()
+            .to_string(),
         repo,
+    })
+}
+
+#[tauri::command]
+fn get_settings() -> Result<AppSettings, String> {
+    load_settings_inner().map_err(String::from)
+}
+
+#[tauri::command]
+fn save_settings(settings: AppSettings) -> Result<ActionReport, String> {
+    save_settings_inner(&settings).map_err(String::from)?;
+    Ok(ActionReport {
+        actions: vec!["Saved app settings.".into()],
+        changed: true,
     })
 }
 
@@ -659,27 +798,34 @@ fn switch_global_identity(profile_name: String, what_if: bool) -> Result<ActionR
         .ok_or_else(|| format!("Profile '{}' was not found.", profile_name))?;
     let all_profiles: Vec<Profile> = profiles.into_values().collect();
     let mut actions = vec![
-        format!("git config --global user.name \"{}\"", profile.git_user_name),
+        format!(
+            "git config --global user.name \"{}\"",
+            profile.git_user_name
+        ),
         format!("git config --global user.email \"{}\"", profile.git_email),
     ];
     let mut changed = false;
 
-    let ssh_report = switch_ssh_identity_inner(&profile, &all_profiles, what_if).map_err(String::from)?;
+    let ssh_report =
+        switch_ssh_identity_inner(&profile, &all_profiles, what_if).map_err(String::from)?;
     actions.extend(ssh_report.actions);
     changed |= ssh_report.changed;
 
     if !what_if {
-        git_output(&["config", "--global", "user.name", &profile.git_user_name], None)
-            .map_err(String::from)?;
-        git_output(&["config", "--global", "user.email", &profile.git_email], None)
-            .map_err(String::from)?;
+        git_output(
+            &["config", "--global", "user.name", &profile.git_user_name],
+            None,
+        )
+        .map_err(String::from)?;
+        git_output(
+            &["config", "--global", "user.email", &profile.git_email],
+            None,
+        )
+        .map_err(String::from)?;
         changed = true;
     }
 
-    Ok(ActionReport {
-        actions,
-        changed,
-    })
+    Ok(ActionReport { actions, changed })
 }
 
 #[tauri::command]
@@ -707,10 +853,16 @@ fn activate_profile(
                 profile.git_user_name, profile.git_email
             ));
             if !what_if {
-                git_output(&["config", "--global", "user.name", &profile.git_user_name], None)
-                    .map_err(String::from)?;
-                git_output(&["config", "--global", "user.email", &profile.git_email], None)
-                    .map_err(String::from)?;
+                git_output(
+                    &["config", "--global", "user.name", &profile.git_user_name],
+                    None,
+                )
+                .map_err(String::from)?;
+                git_output(
+                    &["config", "--global", "user.email", &profile.git_email],
+                    None,
+                )
+                .map_err(String::from)?;
                 changed = true;
             }
         }
@@ -743,13 +895,16 @@ fn activate_profile(
             }
 
             if rewrite_remote {
-                let old_remote =
-                    git_output(&["remote", "get-url", "origin"], Some(repo_path)).map_err(String::from)?;
+                let old_remote = git_output(&["remote", "get-url", "origin"], Some(repo_path))
+                    .map_err(String::from)?;
                 let new_remote = remote_for_profile(&old_remote, &profile).map_err(String::from)?;
                 actions.push(format!("Rewrite origin remote to {}.", new_remote));
                 if !what_if {
-                    git_output(&["remote", "set-url", "origin", &new_remote], Some(repo_path))
-                        .map_err(String::from)?;
+                    git_output(
+                        &["remote", "set-url", "origin", &new_remote],
+                        Some(repo_path),
+                    )
+                    .map_err(String::from)?;
                     changed = true;
                 }
             }
@@ -762,9 +917,13 @@ fn activate_profile(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_status,
+            get_settings,
+            save_settings,
             list_profiles,
             save_profile,
             remove_profile,

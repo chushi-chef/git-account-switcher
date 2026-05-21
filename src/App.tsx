@@ -1,8 +1,9 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import {
   Check,
+  Download,
   FolderOpen,
   GitBranch,
   Pencil,
@@ -10,6 +11,7 @@ import {
   Save,
   Settings,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Badge } from "./components/ui/badge";
@@ -27,7 +29,7 @@ import {
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
 import { call } from "./tauri";
-import type { ActionReport, AppLanguage, AppSettings, AppStatus, AppTheme, Profile } from "./types";
+import type { ActionReport, AppLanguage, AppSettings, AppStatus, AppTheme, ImportReport, Profile } from "./types";
 
 const emptyProfile: Profile = {
   name: "",
@@ -82,9 +84,19 @@ const messages = {
     theme: "主题",
     saving: "正在保存...",
     settingsPath: "保存位置",
+    accountData: "账号数据",
+    importAccounts: "导入账号",
+    exportAccounts: "导出账号",
+    importAccountsTitle: "选择账号备份文件",
+    exportAccountsTitle: "导出账号备份",
+    accountDataDescription: "导出会生成 JSON 备份；导入会合并账号，重复身份会跳过。",
+    importDone: "导入完成",
+    exportDone: "导出完成",
     checkUpdate: "检查更新",
     checkingUpdate: "正在检查更新...",
+    checkingUpdateDescription: "正在连接 GitHub Release。中国境内网络如果代理没有接管 GitHub，可能会超时。",
     downloadingUpdate: "正在下载更新...",
+    downloadProgress: "下载进度",
     updateReady: "发现新版本",
     updateReadyDescription: "检测到 GitHub Release 上有可用更新。",
     updateNow: "更新",
@@ -96,6 +108,7 @@ const messages = {
     currentVersion: "当前版本",
     latestVersion: "最新版本",
     packageName: "发布日期",
+    networkHint: "如果你在中国境内，确认 Clash/代理已接管 GitHub 流量后再试。",
     noSshKey: "未绑定 SSH key",
     unsetIdentity: "未设置全局 Git 身份",
     gitNotReady: "Git 未就绪",
@@ -124,9 +137,19 @@ const messages = {
     theme: "Theme",
     saving: "Saving...",
     settingsPath: "Saved at",
+    accountData: "Account Data",
+    importAccounts: "Import Accounts",
+    exportAccounts: "Export Accounts",
+    importAccountsTitle: "Choose account backup",
+    exportAccountsTitle: "Export account backup",
+    accountDataDescription: "Export creates a JSON backup. Import merges accounts and skips duplicate identities.",
+    importDone: "Import complete",
+    exportDone: "Export complete",
     checkUpdate: "Check for updates",
     checkingUpdate: "Checking for updates...",
+    checkingUpdateDescription: "Connecting to GitHub Releases. If GitHub traffic is not proxied, this may time out.",
     downloadingUpdate: "Downloading update...",
+    downloadProgress: "Download progress",
     updateReady: "Update Available",
     updateReadyDescription: "A newer GitHub Release is available.",
     updateNow: "Update",
@@ -138,6 +161,7 @@ const messages = {
     currentVersion: "Current version",
     latestVersion: "Latest version",
     packageName: "Release date",
+    networkHint: "If GitHub is slow or blocked, enable your proxy/VPN and try again.",
     noSshKey: "No SSH key",
     unsetIdentity: "Global Git identity is not set",
     gitNotReady: "Git is not ready",
@@ -269,9 +293,12 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [draftSettings, setDraftSettings] = useState<AppSettings>(defaultSettings);
   const latestSettingsRef = useRef<AppSettings>(defaultSettings);
+  const updateRunRef = useRef(0);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<Update | null>(null);
   const [updateError, setUpdateError] = useState("");
+  const [updateProgress, setUpdateProgress] = useState("");
+  const [settingsNotice, setSettingsNotice] = useState("");
   const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
   const text = messages[settings.language];
@@ -465,18 +492,92 @@ function App() {
     return error instanceof Error ? error.message : String(error);
   }
 
+  function readableUpdateError(error: unknown) {
+    const raw = readableError(error);
+    return `${raw}\n${text.networkHint}`;
+  }
+
+  function formatBytes(bytes: number) {
+    if (bytes >= 1024 * 1024) {
+      return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    }
+    if (bytes >= 1024) {
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+    return `${bytes} B`;
+  }
+
+  async function exportAccountData() {
+    const selected = await saveDialog({
+      title: text.exportAccountsTitle,
+      defaultPath: "git-account-switcher-profiles.json",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+
+    if (!selected) {
+      return;
+    }
+
+    setBusyProfile("__account_data__");
+    setSettingsNotice("");
+    try {
+      const report = await call<ActionReport>("export_profiles", { path: selected });
+      setSettingsNotice(report.actions[0] || text.exportDone);
+    } catch (error) {
+      setSettingsNotice(readableError(error));
+    } finally {
+      setBusyProfile("");
+    }
+  }
+
+  async function importAccountData() {
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      title: text.importAccountsTitle,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+
+    if (typeof selected !== "string") {
+      return;
+    }
+
+    setBusyProfile("__account_data__");
+    setSettingsNotice("");
+    try {
+      const report = await call<ImportReport>("import_profiles", { path: selected });
+      setSettingsNotice(report.actions[0] || `${text.importDone}: ${report.imported}`);
+      await refresh();
+    } catch (error) {
+      setSettingsNotice(readableError(error));
+    } finally {
+      setBusyProfile("");
+    }
+  }
+
   async function checkForUpdates() {
+    const runId = updateRunRef.current + 1;
+    updateRunRef.current = runId;
     setBusyProfile("__update_check__");
     setUpdateInfo(null);
     setUpdateError("");
+    setUpdateProgress("");
+    setUpdateOpen(true);
     try {
-      const nextUpdateInfo = await check();
+      const nextUpdateInfo = await check({ timeout: 10000 });
+      if (updateRunRef.current !== runId) {
+        return;
+      }
       setUpdateInfo(nextUpdateInfo);
     } catch (error) {
-      setUpdateError(readableError(error));
+      if (updateRunRef.current !== runId) {
+        return;
+      }
+      setUpdateError(readableUpdateError(error));
     } finally {
-      setBusyProfile("");
-      setUpdateOpen(true);
+      if (updateRunRef.current === runId) {
+        setBusyProfile("");
+      }
     }
   }
 
@@ -486,12 +587,32 @@ function App() {
     }
     setBusyProfile("__update_download__");
     setUpdateError("");
+    setUpdateProgress("");
     try {
-      await updateInfo.downloadAndInstall();
+      let downloaded = 0;
+      let total = 0;
+      const onEvent = (event: DownloadEvent) => {
+        if (event.event === "Started") {
+          downloaded = 0;
+          total = event.data.contentLength || 0;
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+        } else {
+          setUpdateProgress(text.downloadingUpdate);
+          return;
+        }
+
+        setUpdateProgress(
+          total > 0
+            ? `${text.downloadProgress}: ${formatBytes(downloaded)} / ${formatBytes(total)}`
+            : `${text.downloadProgress}: ${formatBytes(downloaded)}`,
+        );
+      };
+      await updateInfo.downloadAndInstall(onEvent, { timeout: 20000 });
       setUpdateOpen(false);
       await relaunch();
     } catch (error) {
-      setUpdateError(readableError(error));
+      setUpdateError(readableUpdateError(error));
     } finally {
       setBusyProfile("");
     }
@@ -707,6 +828,34 @@ function App() {
                 ? text.saving
                 : `${text.settingsPath}: ${status?.settingsPath || "~/.git-account-switcher/settings.json"}`}
             </p>
+
+            <div className="fieldStack">
+              <div className="fieldTitle">
+                <Label>{text.accountData}</Label>
+                <em>{text.accountDataDescription}</em>
+              </div>
+              <div className="dataActions">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={exportAccountData}
+                  disabled={busyProfile === "__account_data__"}
+                >
+                  <Download size={15} />
+                  {text.exportAccounts}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={importAccountData}
+                  disabled={busyProfile === "__account_data__"}
+                >
+                  <Upload size={15} />
+                  {text.importAccounts}
+                </Button>
+              </div>
+              {settingsNotice ? <p className="settingsNotice">{settingsNotice}</p> : null}
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -720,13 +869,17 @@ function App() {
                   ? text.updateFailed
                   : updateInfo
                     ? text.updateReady
-                    : text.upToDate}
+                    : busyProfile === "__update_check__"
+                      ? text.checkingUpdate
+                      : text.upToDate}
               </DialogTitle>
-              <DialogDescription>
+              <DialogDescription className={updateError ? "updateErrorText" : undefined}>
                 {updateError
                   ? updateError
                   : updateInfo
                     ? text.updateReadyDescription
+                    : busyProfile === "__update_check__"
+                      ? text.checkingUpdateDescription
                     : text.upToDateDescription}
               </DialogDescription>
             </DialogHeader>
@@ -746,6 +899,8 @@ function App() {
                 ) : null}
               </div>
             ) : null}
+
+            {updateProgress ? <p className="updateProgress">{updateProgress}</p> : null}
 
             <DialogFooter>
               <DialogClose asChild>

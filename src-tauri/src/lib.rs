@@ -6,6 +6,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
 
@@ -75,6 +76,32 @@ struct ActionReport {
     changed: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportReport {
+    actions: Vec<String>,
+    changed: bool,
+    imported: usize,
+    skipped: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfilesExport {
+    format_version: u8,
+    app: String,
+    exported_at: String,
+    profiles: Vec<Profile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ProfilesImport {
+    Export(ProfilesExport),
+    Map(BTreeMap<String, Profile>),
+    List(Vec<Profile>),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
@@ -136,6 +163,54 @@ fn save_profiles_inner(profiles: &BTreeMap<String, Profile>) -> AppResult<()> {
     let json = serde_json::to_string_pretty(profiles)?;
     fs::write(profiles_path()?, json)?;
     Ok(())
+}
+
+fn validate_profile(profile: &Profile) -> AppResult<()> {
+    if profile.name.trim().is_empty() {
+        return Err(AppError::Message("Profile name is required.".into()));
+    }
+    if profile.git_user_name.trim().is_empty() {
+        return Err(AppError::Message("Git user name is required.".into()));
+    }
+    if profile.git_email.trim().is_empty() {
+        return Err(AppError::Message("Git email is required.".into()));
+    }
+    if profile.protocol != "ssh" && profile.protocol != "https" {
+        return Err(AppError::Message("Protocol must be ssh or https.".into()));
+    }
+    Ok(())
+}
+
+fn unique_profile_key(profiles: &BTreeMap<String, Profile>, preferred: &str) -> String {
+    let base = slugify(preferred);
+    if !profiles.contains_key(&base) {
+        return base;
+    }
+
+    let mut index = 2;
+    loop {
+        let candidate = format!("{}-{}", base, index);
+        if !profiles.contains_key(&candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn same_profile_identity(left: &Profile, right: &Profile) -> bool {
+    left.git_user_name == right.git_user_name
+        && left.git_email == right.git_email
+        && left.platform_host == right.platform_host
+        && left.ssh_key_path == right.ssh_key_path
+}
+
+fn imported_profiles(raw: &str) -> AppResult<Vec<Profile>> {
+    let imported: ProfilesImport = serde_json::from_str(raw)?;
+    Ok(match imported {
+        ProfilesImport::Export(export) => export.profiles,
+        ProfilesImport::Map(map) => map.into_values().collect(),
+        ProfilesImport::List(list) => list,
+    })
 }
 
 fn load_settings_inner() -> AppResult<AppSettings> {
@@ -746,18 +821,7 @@ fn list_profiles() -> Result<Vec<Profile>, String> {
 
 #[tauri::command]
 fn save_profile(profile: Profile) -> Result<ActionReport, String> {
-    if profile.name.trim().is_empty() {
-        return Err("Profile name is required.".into());
-    }
-    if profile.git_user_name.trim().is_empty() {
-        return Err("Git user name is required.".into());
-    }
-    if profile.git_email.trim().is_empty() {
-        return Err("Git email is required.".into());
-    }
-    if profile.protocol != "ssh" && profile.protocol != "https" {
-        return Err("Protocol must be ssh or https.".into());
-    }
+    validate_profile(&profile).map_err(String::from)?;
 
     let mut profiles = load_profiles_inner().map_err(String::from)?;
     let name = profile.name.clone();
@@ -767,6 +831,95 @@ fn save_profile(profile: Profile) -> Result<ActionReport, String> {
     Ok(ActionReport {
         actions: vec![format!("Saved profile '{}'.", name)],
         changed: true,
+    })
+}
+
+#[tauri::command]
+fn export_profiles(path: String) -> Result<ActionReport, String> {
+    let target_path = PathBuf::from(path.trim());
+    if target_path.as_os_str().is_empty() {
+        return Err("Export path is required.".into());
+    }
+
+    if let Some(parent) = target_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let profiles = load_profiles_inner().map_err(String::from)?;
+    let exported_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| format!("{}s", duration.as_secs()))
+        .unwrap_or_else(|_| "0s".into());
+    let export = ProfilesExport {
+        format_version: 1,
+        app: "git-account-switcher".into(),
+        exported_at,
+        profiles: profiles.into_values().collect(),
+    };
+    let json = serde_json::to_string_pretty(&export).map_err(|error| error.to_string())?;
+    fs::write(&target_path, format!("{}\n", json)).map_err(|error| error.to_string())?;
+
+    Ok(ActionReport {
+        actions: vec![format!("Exported profiles to {}.", target_path.display())],
+        changed: false,
+    })
+}
+
+#[tauri::command]
+fn import_profiles(path: String) -> Result<ImportReport, String> {
+    let source_path = PathBuf::from(path.trim());
+    if source_path.as_os_str().is_empty() {
+        return Err("Import path is required.".into());
+    }
+
+    let raw = fs::read_to_string(&source_path).map_err(|error| error.to_string())?;
+    let incoming = imported_profiles(&raw).map_err(String::from)?;
+    let mut profiles = load_profiles_inner().map_err(String::from)?;
+    let mut imported = 0;
+    let mut skipped = 0;
+
+    for mut profile in incoming {
+        if let Err(error) = validate_profile(&profile) {
+            skipped += 1;
+            eprintln!("Skipped invalid imported profile: {}", error);
+            continue;
+        }
+
+        if profiles
+            .values()
+            .any(|existing| same_profile_identity(existing, &profile))
+        {
+            skipped += 1;
+            continue;
+        }
+
+        let key = if profiles.contains_key(&profile.name) {
+            unique_profile_key(&profiles, &profile.name)
+        } else {
+            profile.name.clone()
+        };
+        profile.name = key.clone();
+        profiles.insert(key, profile);
+        imported += 1;
+    }
+
+    if imported > 0 {
+        save_profiles_inner(&profiles).map_err(String::from)?;
+    }
+
+    Ok(ImportReport {
+        actions: vec![format!(
+            "Imported {} profile(s), skipped {} from {}.",
+            imported,
+            skipped,
+            source_path.display()
+        )],
+        changed: imported > 0,
+        imported,
+        skipped,
     })
 }
 
@@ -926,6 +1079,8 @@ pub fn run() {
             save_settings,
             list_profiles,
             save_profile,
+            export_profiles,
+            import_profiles,
             remove_profile,
             ensure_ssh_host,
             switch_global_identity,

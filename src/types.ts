@@ -44,3 +44,8 @@ export interface ActionReport {
   actions: string[];
   changed: boolean;
 }
+
+export interface ImportReport extends ActionReport {
+  imported: number;
+  skipped: number;
+}

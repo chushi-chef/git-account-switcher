@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ActionReport, AppSettings, AppStatus, Profile } from "./types";
+import type { ActionReport, AppSettings, AppStatus, ImportReport, Profile } from "./types";
 
 declare global {
   interface Window {
@@ -63,6 +63,12 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   if (command === "save_settings") {
     mockSettings = args?.settings as AppSettings;
     return ({ actions: ["Saved settings."], changed: true } satisfies ActionReport) as T;
+  }
+  if (command === "export_profiles") {
+    return ({ actions: ["Exported profiles."], changed: false } satisfies ActionReport) as T;
+  }
+  if (command === "import_profiles") {
+    return ({ actions: ["Imported profiles."], changed: true, imported: 1, skipped: 0 } satisfies ImportReport) as T;
   }
   if (command === "save_profile") {
     return ({ actions: ["Saved profile."], changed: true } satisfies ActionReport) as T;

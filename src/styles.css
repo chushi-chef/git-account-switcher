@@ -472,6 +472,23 @@ input {
   white-space: nowrap;
 }
 
+.dataActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.settingsNotice,
+.updateProgress {
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted-ink);
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .updateDetails {
   display: grid;
   gap: 6px;
@@ -488,6 +505,10 @@ input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.updateErrorText {
+  white-space: pre-line;
 }
 
 .deleteConfirm strong {

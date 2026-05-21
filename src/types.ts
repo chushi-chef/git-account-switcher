@@ -12,6 +12,8 @@ export interface Profile {
   platformHost?: string | null;
   sshHost?: string | null;
   sshKeyPath?: string | null;
+  pinned?: boolean | null;
+  sortOrder?: number | null;
 }
 
 export interface RepoStatus {
@@ -38,6 +40,9 @@ export interface AppStatus {
 export interface AppSettings {
   language: AppLanguage;
   theme: AppTheme;
+  updateCheckTimeoutMs: number;
+  updateDownloadTimeoutMs: number;
+  updateProxy: string;
 }
 
 export interface ActionReport {
@@ -48,4 +53,16 @@ export interface ActionReport {
 export interface ImportReport extends ActionReport {
   imported: number;
   skipped: number;
+}
+
+export interface ProfileHealthItem {
+  label: string;
+  status: "ok" | "warning" | "error";
+  message: string;
+}
+
+export interface ProfileHealth {
+  profileName: string;
+  level: "ok" | "warning" | "error";
+  items: ProfileHealthItem[];
 }

@@ -368,13 +368,36 @@ input {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 5px;
 }
 
 .enabledButton {
   border-color: color-mix(in oklch, var(--foreground) 18%, var(--border));
   background: var(--green-soft);
   color: var(--green);
+}
+
+.pinnedButton {
+  border-color: color-mix(in oklch, var(--foreground) 18%, var(--border));
+  background: var(--paper-subtle);
+  color: var(--ink);
+}
+
+.healthPill {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted-ink);
+}
+
+.healthPill.ok {
+  color: var(--green);
+}
+
+.healthPill.warning,
+.healthPill.error {
+  color: var(--danger);
 }
 
 .statusBar span {
@@ -456,6 +479,12 @@ input {
   min-width: 88px;
 }
 
+.settingsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
 .selectedOption {
   border-color: color-mix(in oklch, var(--foreground) 18%, var(--border));
   background: var(--paper-strong);
@@ -509,6 +538,35 @@ input {
 
 .updateErrorText {
   white-space: pre-line;
+}
+
+.switchPreview {
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--paper-subtle);
+}
+
+.switchPreview div {
+  display: grid;
+  gap: 2px;
+}
+
+.switchPreview span {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.switchPreview strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .deleteConfirm strong {

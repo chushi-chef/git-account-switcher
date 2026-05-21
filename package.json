@@ -12,7 +12,8 @@
     "tauri:build": "tauri build",
     "tauri:build:debug": "tauri build --debug",
     "release:manifest": "node scripts/create-latest-json.mjs",
-    "release:check": "node scripts/release-check.mjs"
+    "release:check": "node scripts/release-check.mjs",
+    "release:prepare": "node scripts/release-prepare.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

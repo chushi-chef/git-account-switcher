@@ -42,6 +42,8 @@ struct Profile {
     platform_host: Option<String>,
     ssh_host: Option<String>,
     ssh_key_path: Option<String>,
+    pinned: Option<bool>,
+    sort_order: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +87,22 @@ struct ImportReport {
     skipped: usize,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileHealthItem {
+    label: String,
+    status: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileHealth {
+    profile_name: String,
+    level: String,
+    items: Vec<ProfileHealthItem>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProfilesExport {
@@ -107,6 +125,12 @@ enum ProfilesImport {
 struct AppSettings {
     language: String,
     theme: String,
+    #[serde(default = "default_update_check_timeout_ms")]
+    update_check_timeout_ms: u64,
+    #[serde(default = "default_update_download_timeout_ms")]
+    update_download_timeout_ms: u64,
+    #[serde(default)]
+    update_proxy: String,
 }
 
 impl Default for AppSettings {
@@ -114,8 +138,19 @@ impl Default for AppSettings {
         Self {
             language: "zh-CN".into(),
             theme: "system".into(),
+            update_check_timeout_ms: default_update_check_timeout_ms(),
+            update_download_timeout_ms: default_update_download_timeout_ms(),
+            update_proxy: String::new(),
         }
     }
+}
+
+fn default_update_check_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_update_download_timeout_ms() -> u64 {
+    20_000
 }
 
 fn home_dir() -> AppResult<PathBuf> {
@@ -213,6 +248,143 @@ fn imported_profiles(raw: &str) -> AppResult<Vec<Profile>> {
     })
 }
 
+fn ordered_profiles(profiles: BTreeMap<String, Profile>) -> Vec<Profile> {
+    let mut values: Vec<Profile> = profiles.into_values().collect();
+    values.sort_by(|left, right| {
+        right
+            .pinned
+            .unwrap_or(false)
+            .cmp(&left.pinned.unwrap_or(false))
+            .then_with(|| {
+                left.sort_order
+                    .unwrap_or(i32::MAX)
+                    .cmp(&right.sort_order.unwrap_or(i32::MAX))
+            })
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    values
+}
+
+fn persist_profile_order(profiles: &mut BTreeMap<String, Profile>, ordered_names: &[String]) {
+    for (index, name) in ordered_names.iter().enumerate() {
+        if let Some(profile) = profiles.get_mut(name) {
+            profile.sort_order = Some(index as i32);
+        }
+    }
+}
+
+fn health_item(label: &str, status: &str, message: String) -> ProfileHealthItem {
+    ProfileHealthItem {
+        label: label.into(),
+        status: status.into(),
+        message,
+    }
+}
+
+fn profile_health_inner(profile: &Profile) -> ProfileHealth {
+    let mut items = Vec::new();
+
+    let email = profile.git_email.trim();
+    if email.contains('@') && email.split('@').all(|part| !part.trim().is_empty()) {
+        items.push(health_item(
+            "email",
+            "ok",
+            "Email format looks valid.".into(),
+        ));
+    } else {
+        items.push(health_item(
+            "email",
+            "error",
+            "Email format is invalid.".into(),
+        ));
+    }
+
+    if profile.protocol == "ssh" {
+        if let Some(key_path) = profile
+            .ssh_key_path
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            match expand_home(key_path) {
+                Ok(path) if path.exists() => {
+                    items.push(health_item(
+                        "sshKey",
+                        "ok",
+                        format!("SSH key exists: {}", path.display()),
+                    ));
+                }
+                Ok(path) => {
+                    items.push(health_item(
+                        "sshKey",
+                        "error",
+                        format!("SSH key was not found: {}", path.display()),
+                    ));
+                }
+                Err(error) => {
+                    items.push(health_item("sshKey", "error", error.to_string()));
+                }
+            }
+        } else {
+            items.push(health_item(
+                "sshKey",
+                "warning",
+                "SSH profile has no key path.".into(),
+            ));
+        }
+
+        let platform_host = profile
+            .platform_host
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("github.com");
+        match fs::read_to_string(ssh_config_path().unwrap_or_default()) {
+            Ok(raw) => {
+                let lines: Vec<String> = raw.lines().map(|line| line.to_string()).collect();
+                if find_host_block(&lines, platform_host).is_some() {
+                    items.push(health_item(
+                        "sshConfig",
+                        "ok",
+                        format!("Active Host {} exists.", platform_host),
+                    ));
+                } else {
+                    items.push(health_item(
+                        "sshConfig",
+                        "warning",
+                        format!("Host {} is not active in SSH config yet.", platform_host),
+                    ));
+                }
+            }
+            Err(_) => {
+                items.push(health_item(
+                    "sshConfig",
+                    "warning",
+                    "SSH config file has not been created yet.".into(),
+                ));
+            }
+        }
+    } else {
+        items.push(health_item(
+            "protocol",
+            "ok",
+            "HTTPS profile does not need an SSH key.".into(),
+        ));
+    }
+
+    let level = if items.iter().any(|item| item.status == "error") {
+        "error"
+    } else if items.iter().any(|item| item.status == "warning") {
+        "warning"
+    } else {
+        "ok"
+    };
+
+    ProfileHealth {
+        profile_name: profile.name.clone(),
+        level: level.into(),
+        items,
+    }
+}
+
 fn load_settings_inner() -> AppResult<AppSettings> {
     ensure_config_dir()?;
     let path = settings_path()?;
@@ -257,6 +429,29 @@ fn validate_settings(settings: &AppSettings) -> AppResult<()> {
                 other
             )));
         }
+    }
+
+    if !(3_000..=120_000).contains(&settings.update_check_timeout_ms) {
+        return Err(AppError::Message(
+            "Update check timeout must be between 3000 and 120000 ms.".into(),
+        ));
+    }
+
+    if !(5_000..=300_000).contains(&settings.update_download_timeout_ms) {
+        return Err(AppError::Message(
+            "Update download timeout must be between 5000 and 300000 ms.".into(),
+        ));
+    }
+
+    let proxy = settings.update_proxy.trim();
+    if !proxy.is_empty()
+        && !proxy.starts_with("http://")
+        && !proxy.starts_with("https://")
+        && !proxy.starts_with("socks5://")
+    {
+        return Err(AppError::Message(
+            "Update proxy must start with http://, https://, or socks5://.".into(),
+        ));
     }
 
     Ok(())
@@ -816,7 +1011,7 @@ fn save_settings(settings: AppSettings) -> Result<ActionReport, String> {
 #[tauri::command]
 fn list_profiles() -> Result<Vec<Profile>, String> {
     let profiles = load_profiles_inner().map_err(String::from)?;
-    Ok(profiles.into_values().collect())
+    Ok(ordered_profiles(profiles))
 }
 
 #[tauri::command]
@@ -825,11 +1020,99 @@ fn save_profile(profile: Profile) -> Result<ActionReport, String> {
 
     let mut profiles = load_profiles_inner().map_err(String::from)?;
     let name = profile.name.clone();
-    profiles.insert(name.clone(), profile);
+    let mut next_profile = profile;
+    if next_profile.sort_order.is_none() {
+        let next_order = profiles
+            .values()
+            .filter_map(|profile| profile.sort_order)
+            .max()
+            .map(|value| value + 1)
+            .unwrap_or(profiles.len() as i32);
+        next_profile.sort_order = Some(next_order);
+    }
+    profiles.insert(name.clone(), next_profile);
     save_profiles_inner(&profiles).map_err(String::from)?;
 
     Ok(ActionReport {
         actions: vec![format!("Saved profile '{}'.", name)],
+        changed: true,
+    })
+}
+
+#[tauri::command]
+fn list_profile_health() -> Result<Vec<ProfileHealth>, String> {
+    let profiles = ordered_profiles(load_profiles_inner().map_err(String::from)?);
+    Ok(profiles.iter().map(profile_health_inner).collect())
+}
+
+#[tauri::command]
+fn toggle_profile_pin(profile_name: String) -> Result<ActionReport, String> {
+    let mut profiles = load_profiles_inner().map_err(String::from)?;
+    let pinned = {
+        let profile = profiles
+            .get_mut(&profile_name)
+            .ok_or_else(|| format!("Profile '{}' was not found.", profile_name))?;
+        let pinned = !profile.pinned.unwrap_or(false);
+        profile.pinned = Some(pinned);
+        pinned
+    };
+    save_profiles_inner(&profiles).map_err(String::from)?;
+    Ok(ActionReport {
+        actions: vec![format!(
+            "{} profile '{}'.",
+            if pinned { "Pinned" } else { "Unpinned" },
+            profile_name
+        )],
+        changed: true,
+    })
+}
+
+#[tauri::command]
+fn move_profile(profile_name: String, direction: String) -> Result<ActionReport, String> {
+    let mut profiles = load_profiles_inner().map_err(String::from)?;
+    if !profiles.contains_key(&profile_name) {
+        return Err(format!("Profile '{}' was not found.", profile_name));
+    }
+
+    let current_pinned = profiles
+        .get(&profile_name)
+        .and_then(|profile| profile.pinned)
+        .unwrap_or(false);
+    let ordered: Vec<Profile> = ordered_profiles(profiles.clone())
+        .into_iter()
+        .filter(|profile| profile.pinned.unwrap_or(false) == current_pinned)
+        .collect();
+    let Some(index) = ordered
+        .iter()
+        .position(|profile| profile.name == profile_name)
+    else {
+        return Err(format!("Profile '{}' was not found.", profile_name));
+    };
+
+    let target_index = match direction.as_str() {
+        "up" if index > 0 => index - 1,
+        "down" if index + 1 < ordered.len() => index + 1,
+        "up" | "down" => index,
+        other => return Err(format!("Unsupported move direction '{}'.", other)),
+    };
+
+    if target_index == index {
+        return Ok(ActionReport {
+            actions: vec![format!(
+                "Profile '{}' is already at the edge.",
+                profile_name
+            )],
+            changed: false,
+        });
+    }
+
+    let mut names: Vec<String> = ordered.into_iter().map(|profile| profile.name).collect();
+    names.swap(index, target_index);
+    persist_profile_order(&mut profiles, &names);
+    save_profiles_inner(&profiles).map_err(String::from)?;
+
+    Ok(ActionReport {
+        actions: vec![format!("Moved profile '{}' {}.", profile_name, direction)],
         changed: true,
     })
 }
@@ -1079,6 +1362,9 @@ pub fn run() {
             save_settings,
             list_profiles,
             save_profile,
+            list_profile_health,
+            toggle_profile_pin,
+            move_profile,
             export_profiles,
             import_profiles,
             remove_profile,

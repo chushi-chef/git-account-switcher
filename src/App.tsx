@@ -2,14 +2,19 @@ import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import {
+  ArrowDown,
+  ArrowUp,
+  AlertTriangle,
   Check,
   Download,
   FolderOpen,
   GitBranch,
   Pencil,
+  Pin,
   Plus,
   Save,
   Settings,
+  ShieldCheck,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -29,7 +34,16 @@ import {
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
 import { call } from "./tauri";
-import type { ActionReport, AppLanguage, AppSettings, AppStatus, AppTheme, ImportReport, Profile } from "./types";
+import type {
+  ActionReport,
+  AppLanguage,
+  AppSettings,
+  AppStatus,
+  AppTheme,
+  ImportReport,
+  Profile,
+  ProfileHealth,
+} from "./types";
 
 const emptyProfile: Profile = {
   name: "",
@@ -44,11 +58,14 @@ const emptyProfile: Profile = {
 
 const sshKeyPrefix = "~/.ssh/";
 
-type ModalMode = "none" | "add" | "edit" | "delete";
+type ModalMode = "none" | "add" | "edit" | "delete" | "switch";
 
 const defaultSettings: AppSettings = {
   language: "zh-CN",
   theme: "system",
+  updateCheckTimeoutMs: 10000,
+  updateDownloadTimeoutMs: 20000,
+  updateProxy: "",
 };
 
 const languageOptions: Array<{ value: AppLanguage; label: string }> = [
@@ -84,6 +101,12 @@ const messages = {
     theme: "主题",
     saving: "正在保存...",
     settingsPath: "保存位置",
+    updateNetwork: "更新网络",
+    updateCheckTimeout: "检查超时",
+    updateDownloadTimeout: "下载超时",
+    updateProxy: "代理地址",
+    updateProxyPlaceholder: "例如 http://127.0.0.1:7890",
+    milliseconds: "毫秒",
     accountData: "账号数据",
     importAccounts: "导入账号",
     exportAccounts: "导出账号",
@@ -110,6 +133,19 @@ const messages = {
     packageName: "发布日期",
     networkHint: "如果你在中国境内，确认 Clash/代理已接管 GitHub 流量后再试。",
     noSshKey: "未绑定 SSH key",
+    healthOk: "健康",
+    healthWarning: "注意",
+    healthError: "异常",
+    pinAccount: "置顶账号",
+    unpinAccount: "取消置顶",
+    moveUp: "上移",
+    moveDown: "下移",
+    switchAccount: "切换账号",
+    switchDescription: "确认后会写入全局 Git 身份，并同步 SSH Host。切换完成后会自动校验。",
+    switchCurrent: "当前",
+    switchTarget: "目标",
+    switchVerified: "切换已校验",
+    switchVerifyFailed: "切换后校验失败，请检查 Git 全局配置。",
     unsetIdentity: "未设置全局 Git 身份",
     gitNotReady: "Git 未就绪",
     recentRefresh: "最近拉取配置",
@@ -137,6 +173,12 @@ const messages = {
     theme: "Theme",
     saving: "Saving...",
     settingsPath: "Saved at",
+    updateNetwork: "Update Network",
+    updateCheckTimeout: "Check timeout",
+    updateDownloadTimeout: "Download timeout",
+    updateProxy: "Proxy URL",
+    updateProxyPlaceholder: "e.g. http://127.0.0.1:7890",
+    milliseconds: "ms",
     accountData: "Account Data",
     importAccounts: "Import Accounts",
     exportAccounts: "Export Accounts",
@@ -163,6 +205,19 @@ const messages = {
     packageName: "Release date",
     networkHint: "If GitHub is slow or blocked, enable your proxy/VPN and try again.",
     noSshKey: "No SSH key",
+    healthOk: "Healthy",
+    healthWarning: "Check",
+    healthError: "Issue",
+    pinAccount: "Pin account",
+    unpinAccount: "Unpin account",
+    moveUp: "Move up",
+    moveDown: "Move down",
+    switchAccount: "Switch Account",
+    switchDescription: "This writes the global Git identity and syncs SSH Host. The result is verified after switching.",
+    switchCurrent: "Current",
+    switchTarget: "Target",
+    switchVerified: "Switch verified",
+    switchVerifyFailed: "Switch verification failed. Check the global Git config.",
     unsetIdentity: "Global Git identity is not set",
     gitNotReady: "Git is not ready",
     recentRefresh: "Last config refresh",
@@ -196,6 +251,19 @@ function uniqueProfileName(baseName: string, profiles: Profile[], keepName?: str
 
 function sameIdentity(profile: Profile, status: AppStatus | null) {
   return profile.gitUserName === status?.globalUserName && profile.gitEmail === status?.globalUserEmail;
+}
+
+function normalizeSettings(settings: AppSettings): AppSettings {
+  return {
+    ...defaultSettings,
+    ...settings,
+    updateProxy: settings.updateProxy || "",
+  };
+}
+
+function optionalProxy(value: string) {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function isFullPath(value: string) {
@@ -282,12 +350,15 @@ function profileFromIdentity(
 function App() {
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [profileHealth, setProfileHealth] = useState<Record<string, ProfileHealth>>({});
   const [modalMode, setModalMode] = useState<ModalMode>("none");
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
+  const [pendingSwitchProfile, setPendingSwitchProfile] = useState<Profile | null>(null);
   const [draftName, setDraftName] = useState("");
   const [draftEmail, setDraftEmail] = useState("");
   const [draftPlatformHost, setDraftPlatformHost] = useState("github.com");
   const [draftSshKeyPath, setDraftSshKeyPath] = useState(sshKeyPrefix);
+  const [switchNotice, setSwitchNotice] = useState("");
   const [busyProfile, setBusyProfile] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
@@ -304,9 +375,10 @@ function App() {
   const text = messages[settings.language];
 
   async function refresh() {
-    const [nextStatus, nextProfiles] = await Promise.all([
+    const [nextStatus, nextProfiles, nextHealth] = await Promise.all([
       call<AppStatus>("get_status", { repoPath: null }),
       call<Profile[]>("list_profiles"),
+      call<ProfileHealth[]>("list_profile_health"),
     ]);
 
     let profilesToUse = nextProfiles;
@@ -327,11 +399,12 @@ function App() {
 
     setStatus(nextStatus);
     setProfiles(profilesToUse);
+    setProfileHealth(Object.fromEntries(nextHealth.map((health) => [health.profileName, health])));
     setLastFetchedAt(Date.now());
   }
 
   async function loadSettings() {
-    const nextSettings = await call<AppSettings>("get_settings");
+    const nextSettings = normalizeSettings(await call<AppSettings>("get_settings"));
     latestSettingsRef.current = nextSettings;
     setSettings(nextSettings);
     setDraftSettings(nextSettings);
@@ -380,6 +453,12 @@ function App() {
     setModalMode("delete");
   }
 
+  function openSwitchModal(profile: Profile) {
+    setPendingSwitchProfile(profile);
+    setSwitchNotice("");
+    setModalMode("switch");
+  }
+
   function openSettingsModal() {
     setDraftSettings(settings);
     setSettingsOpen(true);
@@ -388,6 +467,8 @@ function App() {
   function closeModal() {
     setModalMode("none");
     setEditingProfile(null);
+    setPendingSwitchProfile(null);
+    setSwitchNotice("");
     setDraftName("");
     setDraftEmail("");
     setDraftPlatformHost("github.com");
@@ -426,6 +507,8 @@ function App() {
         normalizeSshKeyInput(draftSshKeyPath),
       );
       nextProfile.sshHost = editingProfile?.sshHost ?? null;
+      nextProfile.pinned = editingProfile?.pinned ?? false;
+      nextProfile.sortOrder = editingProfile?.sortOrder ?? null;
       if (editingProfile && editingProfile.name !== nextProfile.name) {
         await call<ActionReport>("remove_profile", { profileName: editingProfile.name });
       }
@@ -437,13 +520,47 @@ function App() {
     }
   }
 
-  async function switchTo(profile: Profile) {
+  async function confirmSwitch() {
+    const profile = pendingSwitchProfile;
+    if (!profile) {
+      return;
+    }
+
     setBusyProfile(profile.name);
+    setSwitchNotice("");
     try {
       await call<ActionReport>("switch_global_identity", {
         profileName: profile.name,
         whatIf: false,
       });
+      const nextStatus = await call<AppStatus>("get_status", { repoPath: null });
+      if (nextStatus.globalUserName !== profile.gitUserName || nextStatus.globalUserEmail !== profile.gitEmail) {
+        setSwitchNotice(text.switchVerifyFailed);
+        setStatus(nextStatus);
+        return;
+      }
+      setSwitchNotice(text.switchVerified);
+      closeModal();
+      await refresh();
+    } finally {
+      setBusyProfile("");
+    }
+  }
+
+  async function togglePin(profile: Profile) {
+    setBusyProfile(`__pin__${profile.name}`);
+    try {
+      await call<ActionReport>("toggle_profile_pin", { profileName: profile.name });
+      await refresh();
+    } finally {
+      setBusyProfile("");
+    }
+  }
+
+  async function moveProfile(profile: Profile, direction: "up" | "down") {
+    setBusyProfile(`__move__${profile.name}`);
+    try {
+      await call<ActionReport>("move_profile", { profileName: profile.name, direction });
       await refresh();
     } finally {
       setBusyProfile("");
@@ -465,12 +582,12 @@ function App() {
   }
 
   async function applySettings(patch: Partial<AppSettings>) {
-    const nextSettings = {
+    const nextSettings = normalizeSettings({
       ...latestSettingsRef.current,
       ...patch,
-    };
+    });
 
-    if (nextSettings.language === latestSettingsRef.current.language && nextSettings.theme === latestSettingsRef.current.theme) {
+    if (JSON.stringify(nextSettings) === JSON.stringify(latestSettingsRef.current)) {
       return;
     }
 
@@ -564,7 +681,10 @@ function App() {
     setUpdateProgress("");
     setUpdateOpen(true);
     try {
-      const nextUpdateInfo = await check({ timeout: 10000 });
+      const nextUpdateInfo = await check({
+        timeout: settings.updateCheckTimeoutMs,
+        proxy: optionalProxy(settings.updateProxy),
+      });
       if (updateRunRef.current !== runId) {
         return;
       }
@@ -608,7 +728,7 @@ function App() {
             : `${text.downloadProgress}: ${formatBytes(downloaded)}`,
         );
       };
-      await updateInfo.downloadAndInstall(onEvent, { timeout: 20000 });
+      await updateInfo.downloadAndInstall(onEvent, { timeout: settings.updateDownloadTimeoutMs });
       setUpdateOpen(false);
       await relaunch();
     } catch (error) {
@@ -626,6 +746,14 @@ function App() {
   const appVersion = status?.appVersion || "0.1.0";
   const updateBusy = busyProfile === "__update_check__" || busyProfile === "__update_download__";
   const canDownloadUpdate = Boolean(updateInfo);
+  const pendingTargetIdentity = pendingSwitchProfile
+    ? `${pendingSwitchProfile.gitUserName} <${pendingSwitchProfile.gitEmail}>`
+    : "";
+  const healthText = {
+    ok: text.healthOk,
+    warning: text.healthWarning,
+    error: text.healthError,
+  } satisfies Record<ProfileHealth["level"], string>;
 
   return (
     <main className="appShell accountsOnly">
@@ -653,6 +781,7 @@ function App() {
       <Card className="accountPanel">
         {profiles.map((profile) => {
           const active = sameIdentity(profile, status);
+          const health = profileHealth[profile.name];
           return (
             <Card className={`accountRow ${active ? "active" : ""}`} key={profile.name}>
               <div className="accountName">
@@ -660,15 +789,49 @@ function App() {
                 <span>{profile.gitEmail}</span>
                 <small>
                   <Badge>{profile.platformHost || "github.com"}</Badge>
+                  {health ? (
+                    <span className={`healthPill ${health.level}`} title={health.items.map((item) => item.message).join("\n")}>
+                      {health.level === "ok" ? <ShieldCheck size={12} /> : <AlertTriangle size={12} />}
+                      {healthText[health.level]}
+                    </span>
+                  ) : null}
                   {profile.sshKeyPath ? profile.sshKeyPath : text.noSshKey}
                 </small>
               </div>
               <div className="rowActions">
                 <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => togglePin(profile)}
+                  disabled={busyProfile === `__pin__${profile.name}`}
+                  title={profile.pinned ? text.unpinAccount : text.pinAccount}
+                  className={profile.pinned ? "pinnedButton" : undefined}
+                >
+                  <Pin size={14} />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => moveProfile(profile, "up")}
+                  disabled={busyProfile === `__move__${profile.name}`}
+                  title={text.moveUp}
+                >
+                  <ArrowUp size={14} />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => moveProfile(profile, "down")}
+                  disabled={busyProfile === `__move__${profile.name}`}
+                  title={text.moveDown}
+                >
+                  <ArrowDown size={14} />
+                </Button>
+                <Button
                   variant={active ? "secondary" : "default"}
                   size="sm"
                   className={active ? "enabledButton" : undefined}
-                  onClick={() => switchTo(profile)}
+                  onClick={() => openSwitchModal(profile)}
                   disabled={busyProfile === profile.name || active}
                   title={`${text.enable} ${profile.gitUserName}`}
                 >
@@ -775,6 +938,51 @@ function App() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={modalMode === "switch"} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent>
+          <div className="modalForm">
+            <DialogHeader>
+              <DialogTitle>{text.switchAccount}</DialogTitle>
+              <DialogDescription>{text.switchDescription}</DialogDescription>
+            </DialogHeader>
+
+            <div className="switchPreview">
+              <div>
+                <span>{text.switchCurrent}</span>
+                <strong>{currentIdentity}</strong>
+              </div>
+              <div>
+                <span>{text.switchTarget}</span>
+                <strong>{pendingTargetIdentity}</strong>
+              </div>
+              {pendingSwitchProfile?.sshKeyPath ? (
+                <div>
+                  <span>{text.sshKeyPath}</span>
+                  <strong>{pendingSwitchProfile.sshKeyPath}</strong>
+                </div>
+              ) : null}
+            </div>
+
+            {switchNotice ? <p className="settingsNotice">{switchNotice}</p> : null}
+
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="ghost" disabled={Boolean(pendingSwitchProfile && busyProfile === pendingSwitchProfile.name)}>
+                  {text.cancel}
+                </Button>
+              </DialogClose>
+              <Button
+                type="button"
+                onClick={confirmSwitch}
+                disabled={Boolean(pendingSwitchProfile && busyProfile === pendingSwitchProfile.name)}
+              >
+                {text.enable}
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogContent>
           <div className="modalForm">
@@ -821,6 +1029,55 @@ function App() {
                   </Button>
                 ))}
               </div>
+            </div>
+
+            <div className="fieldStack">
+              <Label>{text.updateNetwork}</Label>
+              <div className="settingsGrid">
+                <div className="fieldStack">
+                  <div className="fieldTitle">
+                    <Label htmlFor="update-check-timeout">{text.updateCheckTimeout}</Label>
+                    <em>{text.milliseconds}</em>
+                  </div>
+                  <Input
+                    id="update-check-timeout"
+                    inputMode="numeric"
+                    value={draftSettings.updateCheckTimeoutMs}
+                    onChange={(event) =>
+                      setDraftSettings((current) => ({
+                        ...current,
+                        updateCheckTimeoutMs: Number(event.target.value) || defaultSettings.updateCheckTimeoutMs,
+                      }))
+                    }
+                    onBlur={() => applySettings({ updateCheckTimeoutMs: draftSettings.updateCheckTimeoutMs }).catch(() => undefined)}
+                  />
+                </div>
+                <div className="fieldStack">
+                  <div className="fieldTitle">
+                    <Label htmlFor="update-download-timeout">{text.updateDownloadTimeout}</Label>
+                    <em>{text.milliseconds}</em>
+                  </div>
+                  <Input
+                    id="update-download-timeout"
+                    inputMode="numeric"
+                    value={draftSettings.updateDownloadTimeoutMs}
+                    onChange={(event) =>
+                      setDraftSettings((current) => ({
+                        ...current,
+                        updateDownloadTimeoutMs: Number(event.target.value) || defaultSettings.updateDownloadTimeoutMs,
+                      }))
+                    }
+                    onBlur={() => applySettings({ updateDownloadTimeoutMs: draftSettings.updateDownloadTimeoutMs }).catch(() => undefined)}
+                  />
+                </div>
+              </div>
+              <Input
+                value={draftSettings.updateProxy}
+                onChange={(event) => setDraftSettings((current) => ({ ...current, updateProxy: event.target.value }))}
+                onBlur={() => applySettings({ updateProxy: draftSettings.updateProxy.trim() }).catch(() => undefined)}
+                placeholder={text.updateProxyPlaceholder}
+                aria-label={text.updateProxy}
+              />
             </div>
 
             <p className="settingsPath">

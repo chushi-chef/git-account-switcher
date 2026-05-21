@@ -31,6 +31,12 @@ function cargoVersion() {
   return match?.[1] ?? null;
 }
 
+function cargoLockVersion() {
+  const raw = readText(join(root, "src-tauri", "Cargo.lock"));
+  const match = raw.match(/\[\[package\]\]\r?\nname = "git-account-switcher"\r?\nversion = "([^"]+)"/);
+  return match?.[1] ?? null;
+}
+
 const packageJson = readJson(join(root, "package.json"));
 const packageLock = readJson(join(root, "package-lock.json"));
 const tauriConfig = readJson(join(root, "src-tauri", "tauri.conf.json"));
@@ -41,6 +47,7 @@ const versions = {
   "package-lock.json": packageLock.version,
   "src-tauri/tauri.conf.json": tauriConfig.version,
   "src-tauri/Cargo.toml": cargoVersion(),
+  "src-tauri/Cargo.lock": cargoLockVersion(),
 };
 
 if (/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {

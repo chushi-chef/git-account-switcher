@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ActionReport, AppSettings, AppStatus, ImportReport, Profile } from "./types";
+import type { ActionReport, AppSettings, AppStatus, ImportReport, Profile, ProfileHealth } from "./types";
 
 declare global {
   interface Window {
@@ -18,12 +18,17 @@ const mockProfiles: Profile[] = [
     protocol: "ssh",
     sshHost: "github-small",
     sshKeyPath: "C:\\Users\\you\\.ssh\\id_ed25519_small",
+    pinned: false,
+    sortOrder: 0,
   },
 ];
 
 let mockSettings: AppSettings = {
   language: "zh-CN",
   theme: "system",
+  updateCheckTimeoutMs: 10000,
+  updateDownloadTimeoutMs: 20000,
+  updateProxy: "",
 };
 
 export async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -57,6 +62,15 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   if (command === "list_profiles") {
     return mockProfiles as T;
   }
+  if (command === "list_profile_health") {
+    return ([
+      {
+        profileName: "small",
+        level: "ok",
+        items: [{ label: "email", status: "ok", message: "Email format looks valid." }],
+      },
+    ] satisfies ProfileHealth[]) as T;
+  }
   if (command === "get_settings") {
     return mockSettings as T;
   }
@@ -75,6 +89,12 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   }
   if (command === "remove_profile") {
     return ({ actions: ["Removed profile."], changed: true } satisfies ActionReport) as T;
+  }
+  if (command === "toggle_profile_pin") {
+    return ({ actions: ["Pinned profile."], changed: true } satisfies ActionReport) as T;
+  }
+  if (command === "move_profile") {
+    return ({ actions: ["Moved profile."], changed: true } satisfies ActionReport) as T;
   }
   if (command === "ensure_ssh_host") {
     return ({ actions: ["Ensure SSH directory exists.", "Write SSH host alias."], changed: false } satisfies ActionReport) as T;

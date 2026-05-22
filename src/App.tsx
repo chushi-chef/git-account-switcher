@@ -1,3 +1,21 @@
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
@@ -18,7 +36,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { type DragEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { type CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
@@ -356,6 +374,113 @@ function profileFromIdentity(
   };
 }
 
+type TextLabels = (typeof messages)["zh-CN"];
+
+type SortableProfileRowProps = {
+  profile: Profile;
+  active: boolean;
+  health?: ProfileHealth;
+  healthLabel: string;
+  text: TextLabels;
+  busyProfile: string;
+  draggingProfileName: string | null;
+  onTogglePin: (profile: Profile) => void;
+  onSwitch: (profile: Profile) => void;
+  onEdit: (profile: Profile) => void;
+  onDelete: (profile: Profile) => void;
+};
+
+function SortableProfileRow({
+  profile,
+  active,
+  health,
+  healthLabel,
+  text,
+  busyProfile,
+  draggingProfileName,
+  onTogglePin,
+  onSwitch,
+  onEdit,
+  onDelete,
+}: SortableProfileRowProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: profile.name,
+    disabled: busyProfile === "__reorder__",
+  });
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 4 : undefined,
+  };
+
+  return (
+    <Card
+      ref={setNodeRef}
+      style={style}
+      className={`accountRow ${active ? "active" : ""} ${draggingProfileName === profile.name || isDragging ? "dragging" : ""}`}
+    >
+      <div className="accountName">
+        <strong>{profile.gitUserName}</strong>
+        <span>{profile.gitEmail}</span>
+        <small>
+          <Badge>{profile.platformHost || "github.com"}</Badge>
+          {health ? (
+            <span className={`healthPill ${health.level}`} title={health.items.map((item) => item.message).join("\n")}>
+              {health.level === "ok" ? <ShieldCheck size={12} /> : <AlertTriangle size={12} />}
+              {healthLabel}
+            </span>
+          ) : null}
+          {profile.sshKeyPath ? profile.sshKeyPath : text.noSshKey}
+        </small>
+      </div>
+      <div className="rowActions">
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="dragHandle"
+          disabled={busyProfile === "__reorder__"}
+          title={text.dragToReorder}
+          aria-label={`${text.dragToReorder} ${profile.gitUserName}`}
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical size={15} />
+        </Button>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          onClick={() => onTogglePin(profile)}
+          disabled={busyProfile === `__pin__${profile.name}`}
+          title={profile.pinned ? text.unpinAccount : text.pinAccount}
+          className={profile.pinned ? "pinnedButton" : undefined}
+        >
+          <Pin size={14} />
+        </Button>
+        <Button
+          type="button"
+          variant={active ? "secondary" : "default"}
+          size="icon"
+          className={`activateButton ${active ? "active" : ""}`}
+          onClick={() => onSwitch(profile)}
+          disabled={busyProfile === profile.name || active}
+          title={active ? text.activeAccount : `${text.activate} ${profile.gitUserName}`}
+          aria-label={active ? text.activeAccount : `${text.activate} ${profile.gitUserName}`}
+        >
+          <Power size={15} />
+        </Button>
+        <Button type="button" size="icon" variant="ghost" onClick={() => onEdit(profile)} title={text.editInfo}>
+          <Pencil size={15} />
+        </Button>
+        <Button type="button" size="icon" variant="ghost" onClick={() => onDelete(profile)} title={text.deleteAccount}>
+          <Trash2 size={15} />
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function App() {
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -375,7 +500,10 @@ function App() {
   const [draftSettings, setDraftSettings] = useState<AppSettings>(defaultSettings);
   const latestSettingsRef = useRef<AppSettings>(defaultSettings);
   const profilesRef = useRef<Profile[]>([]);
-  const dragCommittedRef = useRef(false);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const updateRunRef = useRef(0);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<Update | null>(null);
@@ -573,62 +701,42 @@ function App() {
     }
   }
 
-  function reorderProfiles(sourceName: string, targetName: string) {
-    if (sourceName === targetName) {
-      return;
-    }
-
-    setProfiles((current) => {
-      const sourceIndex = current.findIndex((profile) => profile.name === sourceName);
-      const targetIndex = current.findIndex((profile) => profile.name === targetName);
-      if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
-        return current;
-      }
-
-      const nextProfiles = [...current];
-      const [moved] = nextProfiles.splice(sourceIndex, 1);
-      nextProfiles.splice(targetIndex, 0, moved);
-      profilesRef.current = nextProfiles;
-      return nextProfiles;
-    });
+  function beginProfileDrag(event: DragStartEvent) {
+    setDraggingProfileName(String(event.active.id));
   }
 
-  function beginProfileDrag(event: DragEvent<HTMLButtonElement>, profile: Profile) {
-    dragCommittedRef.current = false;
-    setDraggingProfileName(profile.name);
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", profile.name);
-  }
-
-  function dragOverProfile(event: DragEvent<HTMLElement>, profile: Profile) {
-    if (!draggingProfileName) {
-      return;
-    }
-
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    reorderProfiles(draggingProfileName, profile.name);
-  }
-
-  async function dropProfile(event: DragEvent<HTMLElement>) {
-    event.preventDefault();
-    dragCommittedRef.current = true;
+  function cancelProfileDrag() {
     setDraggingProfileName(null);
+  }
+
+  async function finishProfileDrag(event: DragEndEvent) {
+    setDraggingProfileName(null);
+    const sourceName = String(event.active.id);
+    const targetName = event.over ? String(event.over.id) : "";
+    if (!targetName || sourceName === targetName) {
+      return;
+    }
+
+    const currentProfiles = profilesRef.current;
+    const sourceIndex = currentProfiles.findIndex((profile) => profile.name === sourceName);
+    const targetIndex = currentProfiles.findIndex((profile) => profile.name === targetName);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+      return;
+    }
+
+    const nextProfiles = arrayMove(currentProfiles, sourceIndex, targetIndex);
+    profilesRef.current = nextProfiles;
+    setProfiles(nextProfiles);
     setBusyProfile("__reorder__");
     try {
       await call<ActionReport>("reorder_profiles", {
-        profileNames: profilesRef.current.map((profile) => profile.name),
+        profileNames: nextProfiles.map((profile) => profile.name),
       });
+      await refresh();
+    } catch {
       await refresh();
     } finally {
       setBusyProfile("");
-    }
-  }
-
-  function endProfileDrag() {
-    setDraggingProfileName(null);
-    if (!dragCommittedRef.current) {
-      refresh().catch(() => undefined);
     }
   }
 
@@ -984,74 +1092,36 @@ function App() {
         </Card>
       ) : (
         <Card className="accountPanel">
-          {profiles.map((profile) => {
-            const active = sameIdentity(profile, status);
-            const health = profileHealth[profile.name];
-            return (
-              <Card
-                className={`accountRow ${active ? "active" : ""} ${draggingProfileName === profile.name ? "dragging" : ""}`}
-                key={profile.name}
-                onDragOver={(event) => dragOverProfile(event, profile)}
-                onDrop={dropProfile}
-              >
-                <div className="accountName">
-                  <strong>{profile.gitUserName}</strong>
-                  <span>{profile.gitEmail}</span>
-                  <small>
-                    <Badge>{profile.platformHost || "github.com"}</Badge>
-                    {health ? (
-                      <span className={`healthPill ${health.level}`} title={health.items.map((item) => item.message).join("\n")}>
-                        {health.level === "ok" ? <ShieldCheck size={12} /> : <AlertTriangle size={12} />}
-                        {healthText[health.level]}
-                      </span>
-                    ) : null}
-                    {profile.sshKeyPath ? profile.sshKeyPath : text.noSshKey}
-                  </small>
-                </div>
-                <div className="rowActions">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="dragHandle"
-                    draggable
-                    onDragStart={(event) => beginProfileDrag(event, profile)}
-                    onDragEnd={endProfileDrag}
-                    disabled={busyProfile === "__reorder__"}
-                    title={text.dragToReorder}
-                  >
-                    <GripVertical size={15} />
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={() => togglePin(profile)}
-                    disabled={busyProfile === `__pin__${profile.name}`}
-                    title={profile.pinned ? text.unpinAccount : text.pinAccount}
-                    className={profile.pinned ? "pinnedButton" : undefined}
-                  >
-                    <Pin size={14} />
-                  </Button>
-                  <Button
-                    variant={active ? "secondary" : "default"}
-                    size="icon"
-                    className={`activateButton ${active ? "active" : ""}`}
-                    onClick={() => openSwitchModal(profile)}
-                    disabled={busyProfile === profile.name || active}
-                    title={active ? text.activeAccount : `${text.activate} ${profile.gitUserName}`}
-                    aria-label={active ? text.activeAccount : `${text.activate} ${profile.gitUserName}`}
-                  >
-                    <Power size={15} />
-                  </Button>
-                  <Button size="icon" variant="ghost" onClick={() => openEditModal(profile)} title={text.editInfo}>
-                    <Pencil size={15} />
-                  </Button>
-                  <Button size="icon" variant="ghost" onClick={() => openDeleteModal(profile)} title={text.deleteAccount}>
-                    <Trash2 size={15} />
-                  </Button>
-                </div>
-              </Card>
-            );
-          })}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={beginProfileDrag}
+            onDragCancel={cancelProfileDrag}
+            onDragEnd={finishProfileDrag}
+          >
+            <SortableContext items={profiles.map((profile) => profile.name)} strategy={verticalListSortingStrategy}>
+              {profiles.map((profile) => {
+                const active = sameIdentity(profile, status);
+                const health = profileHealth[profile.name];
+                return (
+                  <SortableProfileRow
+                    key={profile.name}
+                    profile={profile}
+                    active={active}
+                    health={health}
+                    healthLabel={health ? healthText[health.level] : ""}
+                    text={text}
+                    busyProfile={busyProfile}
+                    draggingProfileName={draggingProfileName}
+                    onTogglePin={togglePin}
+                    onSwitch={openSwitchModal}
+                    onEdit={openEditModal}
+                    onDelete={openDeleteModal}
+                  />
+                );
+              })}
+            </SortableContext>
+          </DndContext>
         </Card>
       )}
 

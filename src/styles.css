@@ -509,6 +509,7 @@ input {
 }
 
 .accountRow {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
@@ -524,6 +525,8 @@ input {
     box-shadow 140ms ease-out,
     opacity 120ms ease-out,
     transform 120ms ease-out;
+  user-select: none;
+  will-change: transform;
 }
 
 .accountRow.active {
@@ -538,8 +541,10 @@ input {
 }
 
 .accountRow.dragging {
-  opacity: 0.58;
-  transform: scale(0.995);
+  border-color: color-mix(in oklch, var(--primary) 40%, var(--border));
+  box-shadow: var(--shadow-md), var(--inner-highlight);
+  cursor: grabbing;
+  opacity: 0.88;
 }
 
 .accountName {
@@ -606,6 +611,7 @@ input {
 .dragHandle {
   cursor: grab;
   touch-action: none;
+  user-select: none;
 }
 
 .dragHandle:active {

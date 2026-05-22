@@ -2,23 +2,23 @@ import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import {
-  ArrowDown,
-  ArrowUp,
+  ArrowLeft,
   AlertTriangle,
-  Check,
   Download,
   FolderOpen,
   GitBranch,
+  GripVertical,
   Pencil,
   Pin,
   Plus,
+  Power,
   Save,
   Settings,
   ShieldCheck,
   Trash2,
   Upload,
 } from "lucide-react";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { type DragEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
@@ -59,6 +59,7 @@ const emptyProfile: Profile = {
 const sshKeyPrefix = "~/.ssh/";
 
 type ModalMode = "none" | "add" | "edit" | "delete" | "switch";
+type AppPage = "accounts" | "settings";
 
 const defaultSettings: AppSettings = {
   language: "zh-CN",
@@ -91,6 +92,10 @@ const messages = {
     cancel: "取消",
     save: "保存",
     enable: "启用",
+    activate: "切换",
+    accounts: "账号",
+    activeAccount: "当前账号",
+    dragToReorder: "拖拽排序",
     editInfo: "修改信息",
     deleteAccount: "删除账号",
     deleteDescription: "将从本地列表删除",
@@ -163,6 +168,10 @@ const messages = {
     cancel: "Cancel",
     save: "Save",
     enable: "Enable",
+    activate: "Switch",
+    accounts: "Accounts",
+    activeAccount: "Current account",
+    dragToReorder: "Drag to reorder",
     editInfo: "Edit info",
     deleteAccount: "Delete Account",
     deleteDescription: "Remove from the local account list",
@@ -360,10 +369,13 @@ function App() {
   const [draftSshKeyPath, setDraftSshKeyPath] = useState(sshKeyPrefix);
   const [switchNotice, setSwitchNotice] = useState("");
   const [busyProfile, setBusyProfile] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activePage, setActivePage] = useState<AppPage>("accounts");
+  const [draggingProfileName, setDraggingProfileName] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [draftSettings, setDraftSettings] = useState<AppSettings>(defaultSettings);
   const latestSettingsRef = useRef<AppSettings>(defaultSettings);
+  const profilesRef = useRef<Profile[]>([]);
+  const dragCommittedRef = useRef(false);
   const updateRunRef = useRef(0);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<Update | null>(null);
@@ -430,6 +442,10 @@ function App() {
     document.documentElement.dataset.theme = settings.theme;
   }, [settings.theme]);
 
+  useEffect(() => {
+    profilesRef.current = profiles;
+  }, [profiles]);
+
   function openAddModal() {
     setEditingProfile(null);
     setDraftName("");
@@ -459,9 +475,9 @@ function App() {
     setModalMode("switch");
   }
 
-  function openSettingsModal() {
+  function openSettingsPage() {
     setDraftSettings(settings);
-    setSettingsOpen(true);
+    setActivePage("settings");
   }
 
   function closeModal() {
@@ -557,13 +573,62 @@ function App() {
     }
   }
 
-  async function moveProfile(profile: Profile, direction: "up" | "down") {
-    setBusyProfile(`__move__${profile.name}`);
+  function reorderProfiles(sourceName: string, targetName: string) {
+    if (sourceName === targetName) {
+      return;
+    }
+
+    setProfiles((current) => {
+      const sourceIndex = current.findIndex((profile) => profile.name === sourceName);
+      const targetIndex = current.findIndex((profile) => profile.name === targetName);
+      if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+        return current;
+      }
+
+      const nextProfiles = [...current];
+      const [moved] = nextProfiles.splice(sourceIndex, 1);
+      nextProfiles.splice(targetIndex, 0, moved);
+      profilesRef.current = nextProfiles;
+      return nextProfiles;
+    });
+  }
+
+  function beginProfileDrag(event: DragEvent<HTMLButtonElement>, profile: Profile) {
+    dragCommittedRef.current = false;
+    setDraggingProfileName(profile.name);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", profile.name);
+  }
+
+  function dragOverProfile(event: DragEvent<HTMLElement>, profile: Profile) {
+    if (!draggingProfileName) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    reorderProfiles(draggingProfileName, profile.name);
+  }
+
+  async function dropProfile(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    dragCommittedRef.current = true;
+    setDraggingProfileName(null);
+    setBusyProfile("__reorder__");
     try {
-      await call<ActionReport>("move_profile", { profileName: profile.name, direction });
+      await call<ActionReport>("reorder_profiles", {
+        profileNames: profilesRef.current.map((profile) => profile.name),
+      });
       await refresh();
     } finally {
       setBusyProfile("");
+    }
+  }
+
+  function endProfileDrag() {
+    setDraggingProfileName(null);
+    if (!dragCommittedRef.current) {
+      refresh().catch(() => undefined);
     }
   }
 
@@ -768,8 +833,13 @@ function App() {
             </button>
           </div>
           <div className="headerActions">
-            <Button size="icon" variant="ghost" onClick={openSettingsModal} title={text.settings}>
-              <Settings size={16} />
+            <Button
+              size="icon"
+              variant={activePage === "settings" ? "secondary" : "ghost"}
+              onClick={activePage === "settings" ? () => setActivePage("accounts") : openSettingsPage}
+              title={activePage === "settings" ? text.accounts : text.settings}
+            >
+              {activePage === "settings" ? <ArrowLeft size={16} /> : <Settings size={16} />}
             </Button>
             <Button size="icon" variant="icon" onClick={openAddModal} title={text.addAccount}>
               <Plus size={17} />
@@ -778,77 +848,212 @@ function App() {
         </CardContent>
       </Card>
 
-      <Card className="accountPanel">
-        {profiles.map((profile) => {
-          const active = sameIdentity(profile, status);
-          const health = profileHealth[profile.name];
-          return (
-            <Card className={`accountRow ${active ? "active" : ""}`} key={profile.name}>
-              <div className="accountName">
-                <strong>{profile.gitUserName}</strong>
-                <span>{profile.gitEmail}</span>
-                <small>
-                  <Badge>{profile.platformHost || "github.com"}</Badge>
-                  {health ? (
-                    <span className={`healthPill ${health.level}`} title={health.items.map((item) => item.message).join("\n")}>
-                      {health.level === "ok" ? <ShieldCheck size={12} /> : <AlertTriangle size={12} />}
-                      {healthText[health.level]}
-                    </span>
-                  ) : null}
-                  {profile.sshKeyPath ? profile.sshKeyPath : text.noSshKey}
-                </small>
+      {activePage === "settings" ? (
+        <Card className="settingsPage">
+          <div className="settingsPageContent">
+            <div className="settingsHeader">
+              <div>
+                <h2>{text.settings}</h2>
+                <p>{text.settingsDescription}</p>
               </div>
-              <div className="rowActions">
+            </div>
+
+            <div className="fieldStack">
+              <Label>{text.language}</Label>
+              <div className="segmentedControl" role="group" aria-label={text.language}>
+                {languageOptions.map((option) => (
+                  <Button
+                    key={option.value}
+                    type="button"
+                    variant={draftSettings.language === option.value ? "secondary" : "ghost"}
+                    size="sm"
+                    className={draftSettings.language === option.value ? "selectedOption" : undefined}
+                    aria-pressed={draftSettings.language === option.value}
+                    disabled={busyProfile === "__settings__" && draftSettings.language === option.value}
+                    onClick={() => applySettings({ language: option.value }).catch(() => undefined)}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            <div className="fieldStack">
+              <Label>{text.theme}</Label>
+              <div className="segmentedControl" role="group" aria-label={text.theme}>
+                {themeOptions.map((option) => (
+                  <Button
+                    key={option.value}
+                    type="button"
+                    variant={draftSettings.theme === option.value ? "secondary" : "ghost"}
+                    size="sm"
+                    className={draftSettings.theme === option.value ? "selectedOption" : undefined}
+                    aria-pressed={draftSettings.theme === option.value}
+                    disabled={busyProfile === "__settings__" && draftSettings.theme === option.value}
+                    onClick={() => applySettings({ theme: option.value }).catch(() => undefined)}
+                  >
+                    {option.label[settings.language]}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            <div className="fieldStack">
+              <Label>{text.updateNetwork}</Label>
+              <div className="settingsGrid">
+                <div className="fieldStack">
+                  <div className="fieldTitle">
+                    <Label htmlFor="update-check-timeout">{text.updateCheckTimeout}</Label>
+                    <em>{text.milliseconds}</em>
+                  </div>
+                  <Input
+                    id="update-check-timeout"
+                    inputMode="numeric"
+                    value={draftSettings.updateCheckTimeoutMs}
+                    onChange={(event) =>
+                      setDraftSettings((current) => ({
+                        ...current,
+                        updateCheckTimeoutMs: Number(event.target.value) || defaultSettings.updateCheckTimeoutMs,
+                      }))
+                    }
+                    onBlur={() => applySettings({ updateCheckTimeoutMs: draftSettings.updateCheckTimeoutMs }).catch(() => undefined)}
+                  />
+                </div>
+                <div className="fieldStack">
+                  <div className="fieldTitle">
+                    <Label htmlFor="update-download-timeout">{text.updateDownloadTimeout}</Label>
+                    <em>{text.milliseconds}</em>
+                  </div>
+                  <Input
+                    id="update-download-timeout"
+                    inputMode="numeric"
+                    value={draftSettings.updateDownloadTimeoutMs}
+                    onChange={(event) =>
+                      setDraftSettings((current) => ({
+                        ...current,
+                        updateDownloadTimeoutMs: Number(event.target.value) || defaultSettings.updateDownloadTimeoutMs,
+                      }))
+                    }
+                    onBlur={() => applySettings({ updateDownloadTimeoutMs: draftSettings.updateDownloadTimeoutMs }).catch(() => undefined)}
+                  />
+                </div>
+              </div>
+              <Input
+                value={draftSettings.updateProxy}
+                onChange={(event) => setDraftSettings((current) => ({ ...current, updateProxy: event.target.value }))}
+                onBlur={() => applySettings({ updateProxy: draftSettings.updateProxy.trim() }).catch(() => undefined)}
+                placeholder={text.updateProxyPlaceholder}
+                aria-label={text.updateProxy}
+              />
+            </div>
+
+            <p className="settingsPath">
+              {busyProfile === "__settings__"
+                ? text.saving
+                : `${text.settingsPath}: ${status?.settingsPath || "~/.git-account-switcher/settings.json"}`}
+            </p>
+
+            <div className="fieldStack">
+              <div className="fieldTitle">
+                <Label>{text.accountData}</Label>
+                <em>{text.accountDataDescription}</em>
+              </div>
+              <div className="dataActions">
                 <Button
-                  size="icon"
+                  type="button"
                   variant="ghost"
-                  onClick={() => togglePin(profile)}
-                  disabled={busyProfile === `__pin__${profile.name}`}
-                  title={profile.pinned ? text.unpinAccount : text.pinAccount}
-                  className={profile.pinned ? "pinnedButton" : undefined}
+                  onClick={exportAccountData}
+                  disabled={busyProfile === "__account_data__"}
                 >
-                  <Pin size={14} />
+                  <Download size={15} />
+                  {text.exportAccounts}
                 </Button>
                 <Button
-                  size="icon"
+                  type="button"
                   variant="ghost"
-                  onClick={() => moveProfile(profile, "up")}
-                  disabled={busyProfile === `__move__${profile.name}`}
-                  title={text.moveUp}
+                  onClick={importAccountData}
+                  disabled={busyProfile === "__account_data__"}
                 >
-                  <ArrowUp size={14} />
-                </Button>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => moveProfile(profile, "down")}
-                  disabled={busyProfile === `__move__${profile.name}`}
-                  title={text.moveDown}
-                >
-                  <ArrowDown size={14} />
-                </Button>
-                <Button
-                  variant={active ? "secondary" : "default"}
-                  size="sm"
-                  className={active ? "enabledButton" : undefined}
-                  onClick={() => openSwitchModal(profile)}
-                  disabled={busyProfile === profile.name || active}
-                  title={`${text.enable} ${profile.gitUserName}`}
-                >
-                  {active ? <Check size={15} /> : null}
-                  {text.enable}
-                </Button>
-                <Button size="icon" variant="ghost" onClick={() => openEditModal(profile)} title={text.editInfo}>
-                  <Pencil size={15} />
-                </Button>
-                <Button size="icon" variant="ghost" onClick={() => openDeleteModal(profile)} title={text.deleteAccount}>
-                  <Trash2 size={15} />
+                  <Upload size={15} />
+                  {text.importAccounts}
                 </Button>
               </div>
-            </Card>
-          );
-        })}
-      </Card>
+              {settingsNotice ? <p className="settingsNotice">{settingsNotice}</p> : null}
+            </div>
+          </div>
+        </Card>
+      ) : (
+        <Card className="accountPanel">
+          {profiles.map((profile) => {
+            const active = sameIdentity(profile, status);
+            const health = profileHealth[profile.name];
+            return (
+              <Card
+                className={`accountRow ${active ? "active" : ""} ${draggingProfileName === profile.name ? "dragging" : ""}`}
+                key={profile.name}
+                onDragOver={(event) => dragOverProfile(event, profile)}
+                onDrop={dropProfile}
+              >
+                <div className="accountName">
+                  <strong>{profile.gitUserName}</strong>
+                  <span>{profile.gitEmail}</span>
+                  <small>
+                    <Badge>{profile.platformHost || "github.com"}</Badge>
+                    {health ? (
+                      <span className={`healthPill ${health.level}`} title={health.items.map((item) => item.message).join("\n")}>
+                        {health.level === "ok" ? <ShieldCheck size={12} /> : <AlertTriangle size={12} />}
+                        {healthText[health.level]}
+                      </span>
+                    ) : null}
+                    {profile.sshKeyPath ? profile.sshKeyPath : text.noSshKey}
+                  </small>
+                </div>
+                <div className="rowActions">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="dragHandle"
+                    draggable
+                    onDragStart={(event) => beginProfileDrag(event, profile)}
+                    onDragEnd={endProfileDrag}
+                    disabled={busyProfile === "__reorder__"}
+                    title={text.dragToReorder}
+                  >
+                    <GripVertical size={15} />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => togglePin(profile)}
+                    disabled={busyProfile === `__pin__${profile.name}`}
+                    title={profile.pinned ? text.unpinAccount : text.pinAccount}
+                    className={profile.pinned ? "pinnedButton" : undefined}
+                  >
+                    <Pin size={14} />
+                  </Button>
+                  <Button
+                    variant={active ? "secondary" : "default"}
+                    size="icon"
+                    className={`activateButton ${active ? "active" : ""}`}
+                    onClick={() => openSwitchModal(profile)}
+                    disabled={busyProfile === profile.name || active}
+                    title={active ? text.activeAccount : `${text.activate} ${profile.gitUserName}`}
+                    aria-label={active ? text.activeAccount : `${text.activate} ${profile.gitUserName}`}
+                  >
+                    <Power size={15} />
+                  </Button>
+                  <Button size="icon" variant="ghost" onClick={() => openEditModal(profile)} title={text.editInfo}>
+                    <Pencil size={15} />
+                  </Button>
+                  <Button size="icon" variant="ghost" onClick={() => openDeleteModal(profile)} title={text.deleteAccount}>
+                    <Trash2 size={15} />
+                  </Button>
+                </div>
+              </Card>
+            );
+          })}
+        </Card>
+      )}
 
       <Dialog open={modalMode === "add" || modalMode === "edit"} onOpenChange={(open) => !open && closeModal()}>
         <DialogContent>
@@ -976,143 +1181,9 @@ function App() {
                 onClick={confirmSwitch}
                 disabled={Boolean(pendingSwitchProfile && busyProfile === pendingSwitchProfile.name)}
               >
-                {text.enable}
+                {text.activate}
               </Button>
             </DialogFooter>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent>
-          <div className="modalForm">
-            <DialogHeader>
-              <DialogTitle>{text.settings}</DialogTitle>
-              <DialogDescription>{text.settingsDescription}</DialogDescription>
-            </DialogHeader>
-
-            <div className="fieldStack">
-              <Label>{text.language}</Label>
-              <div className="segmentedControl" role="group" aria-label={text.language}>
-                {languageOptions.map((option) => (
-                  <Button
-                    key={option.value}
-                    type="button"
-                    variant={draftSettings.language === option.value ? "secondary" : "ghost"}
-                    size="sm"
-                    className={draftSettings.language === option.value ? "selectedOption" : undefined}
-                    aria-pressed={draftSettings.language === option.value}
-                    disabled={busyProfile === "__settings__" && draftSettings.language === option.value}
-                    onClick={() => applySettings({ language: option.value }).catch(() => undefined)}
-                  >
-                    {option.label}
-                  </Button>
-                ))}
-              </div>
-            </div>
-
-            <div className="fieldStack">
-              <Label>{text.theme}</Label>
-              <div className="segmentedControl" role="group" aria-label={text.theme}>
-                {themeOptions.map((option) => (
-                  <Button
-                    key={option.value}
-                    type="button"
-                    variant={draftSettings.theme === option.value ? "secondary" : "ghost"}
-                    size="sm"
-                    className={draftSettings.theme === option.value ? "selectedOption" : undefined}
-                    aria-pressed={draftSettings.theme === option.value}
-                    disabled={busyProfile === "__settings__" && draftSettings.theme === option.value}
-                    onClick={() => applySettings({ theme: option.value }).catch(() => undefined)}
-                  >
-                    {option.label[settings.language]}
-                  </Button>
-                ))}
-              </div>
-            </div>
-
-            <div className="fieldStack">
-              <Label>{text.updateNetwork}</Label>
-              <div className="settingsGrid">
-                <div className="fieldStack">
-                  <div className="fieldTitle">
-                    <Label htmlFor="update-check-timeout">{text.updateCheckTimeout}</Label>
-                    <em>{text.milliseconds}</em>
-                  </div>
-                  <Input
-                    id="update-check-timeout"
-                    inputMode="numeric"
-                    value={draftSettings.updateCheckTimeoutMs}
-                    onChange={(event) =>
-                      setDraftSettings((current) => ({
-                        ...current,
-                        updateCheckTimeoutMs: Number(event.target.value) || defaultSettings.updateCheckTimeoutMs,
-                      }))
-                    }
-                    onBlur={() => applySettings({ updateCheckTimeoutMs: draftSettings.updateCheckTimeoutMs }).catch(() => undefined)}
-                  />
-                </div>
-                <div className="fieldStack">
-                  <div className="fieldTitle">
-                    <Label htmlFor="update-download-timeout">{text.updateDownloadTimeout}</Label>
-                    <em>{text.milliseconds}</em>
-                  </div>
-                  <Input
-                    id="update-download-timeout"
-                    inputMode="numeric"
-                    value={draftSettings.updateDownloadTimeoutMs}
-                    onChange={(event) =>
-                      setDraftSettings((current) => ({
-                        ...current,
-                        updateDownloadTimeoutMs: Number(event.target.value) || defaultSettings.updateDownloadTimeoutMs,
-                      }))
-                    }
-                    onBlur={() => applySettings({ updateDownloadTimeoutMs: draftSettings.updateDownloadTimeoutMs }).catch(() => undefined)}
-                  />
-                </div>
-              </div>
-              <Input
-                value={draftSettings.updateProxy}
-                onChange={(event) => setDraftSettings((current) => ({ ...current, updateProxy: event.target.value }))}
-                onBlur={() => applySettings({ updateProxy: draftSettings.updateProxy.trim() }).catch(() => undefined)}
-                placeholder={text.updateProxyPlaceholder}
-                aria-label={text.updateProxy}
-              />
-            </div>
-
-            <p className="settingsPath">
-              {busyProfile === "__settings__"
-                ? text.saving
-                : `${text.settingsPath}: ${status?.settingsPath || "~/.git-account-switcher/settings.json"}`}
-            </p>
-
-            <div className="fieldStack">
-              <div className="fieldTitle">
-                <Label>{text.accountData}</Label>
-                <em>{text.accountDataDescription}</em>
-              </div>
-              <div className="dataActions">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={exportAccountData}
-                  disabled={busyProfile === "__account_data__"}
-                >
-                  <Download size={15} />
-                  {text.exportAccounts}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={importAccountData}
-                  disabled={busyProfile === "__account_data__"}
-                >
-                  <Upload size={15} />
-                  {text.importAccounts}
-                </Button>
-              </div>
-              {settingsNotice ? <p className="settingsNotice">{settingsNotice}</p> : null}
-            </div>
           </div>
         </DialogContent>
       </Dialog>

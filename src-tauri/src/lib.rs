@@ -251,15 +251,9 @@ fn imported_profiles(raw: &str) -> AppResult<Vec<Profile>> {
 fn ordered_profiles(profiles: BTreeMap<String, Profile>) -> Vec<Profile> {
     let mut values: Vec<Profile> = profiles.into_values().collect();
     values.sort_by(|left, right| {
-        right
-            .pinned
-            .unwrap_or(false)
-            .cmp(&left.pinned.unwrap_or(false))
-            .then_with(|| {
-                left.sort_order
-                    .unwrap_or(i32::MAX)
-                    .cmp(&right.sort_order.unwrap_or(i32::MAX))
-            })
+        left.sort_order
+            .unwrap_or(i32::MAX)
+            .cmp(&right.sort_order.unwrap_or(i32::MAX))
             .then_with(|| left.name.cmp(&right.name))
     });
     values
@@ -1048,12 +1042,21 @@ fn list_profile_health() -> Result<Vec<ProfileHealth>, String> {
 #[tauri::command]
 fn toggle_profile_pin(profile_name: String) -> Result<ActionReport, String> {
     let mut profiles = load_profiles_inner().map_err(String::from)?;
+    let top_order = profiles
+        .values()
+        .filter_map(|profile| profile.sort_order)
+        .min()
+        .unwrap_or(0)
+        - 1;
     let pinned = {
         let profile = profiles
             .get_mut(&profile_name)
             .ok_or_else(|| format!("Profile '{}' was not found.", profile_name))?;
         let pinned = !profile.pinned.unwrap_or(false);
         profile.pinned = Some(pinned);
+        if pinned {
+            profile.sort_order = Some(top_order);
+        }
         pinned
     };
     save_profiles_inner(&profiles).map_err(String::from)?;
@@ -1113,6 +1116,31 @@ fn move_profile(profile_name: String, direction: String) -> Result<ActionReport,
 
     Ok(ActionReport {
         actions: vec![format!("Moved profile '{}' {}.", profile_name, direction)],
+        changed: true,
+    })
+}
+
+#[tauri::command]
+fn reorder_profiles(profile_names: Vec<String>) -> Result<ActionReport, String> {
+    let mut profiles = load_profiles_inner().map_err(String::from)?;
+    let mut ordered_names = Vec::new();
+    for name in profile_names {
+        if profiles.contains_key(&name) && !ordered_names.contains(&name) {
+            ordered_names.push(name);
+        }
+    }
+
+    for profile in ordered_profiles(profiles.clone()) {
+        if !ordered_names.contains(&profile.name) {
+            ordered_names.push(profile.name);
+        }
+    }
+
+    persist_profile_order(&mut profiles, &ordered_names);
+    save_profiles_inner(&profiles).map_err(String::from)?;
+
+    Ok(ActionReport {
+        actions: vec!["Reordered profiles.".into()],
         changed: true,
     })
 }
@@ -1365,6 +1393,7 @@ pub fn run() {
             list_profile_health,
             toggle_profile_pin,
             move_profile,
+            reorder_profiles,
             export_profiles,
             import_profiles,
             remove_profile,

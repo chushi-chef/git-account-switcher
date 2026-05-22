@@ -96,6 +96,9 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   if (command === "move_profile") {
     return ({ actions: ["Moved profile."], changed: true } satisfies ActionReport) as T;
   }
+  if (command === "reorder_profiles") {
+    return ({ actions: ["Reordered profiles."], changed: true } satisfies ActionReport) as T;
+  }
   if (command === "ensure_ssh_host") {
     return ({ actions: ["Ensure SSH directory exists.", "Write SSH host alias."], changed: false } satisfies ActionReport) as T;
   }

@@ -13,8 +13,9 @@ if (!version || !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
 const tag = `v${version}`;
 
 function run(command, args) {
+  const executable = process.platform === "win32" && command === "npm" ? "npm.cmd" : command;
   console.log(`> ${[command, ...args].join(" ")}`);
-  execFileSync(command, args, { cwd: root, stdio: "inherit" });
+  execFileSync(executable, args, { cwd: root, stdio: "inherit" });
 }
 
 function output(command, args) {

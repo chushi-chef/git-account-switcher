@@ -19,6 +19,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowLeft,
   AlertTriangle,
@@ -26,6 +27,9 @@ import {
   FolderOpen,
   GitBranch,
   GripVertical,
+  Maximize2,
+  Minimize2,
+  Minus,
   Pencil,
   Pin,
   Plus,
@@ -35,8 +39,9 @@ import {
   ShieldCheck,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
-import { type CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
+import { type CSSProperties, FormEvent, type MouseEvent, useEffect, useRef, useState } from "react";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
@@ -114,6 +119,10 @@ const messages = {
     accounts: "账号",
     activeAccount: "当前账号",
     dragToReorder: "拖拽排序",
+    minimizeWindow: "最小化",
+    maximizeWindow: "最大化",
+    restoreWindow: "还原窗口",
+    closeWindow: "关闭",
     editInfo: "修改信息",
     deleteAccount: "删除账号",
     deleteDescription: "将从本地列表删除",
@@ -190,6 +199,10 @@ const messages = {
     accounts: "Accounts",
     activeAccount: "Current account",
     dragToReorder: "Drag to reorder",
+    minimizeWindow: "Minimize",
+    maximizeWindow: "Maximize",
+    restoreWindow: "Restore",
+    closeWindow: "Close",
     editInfo: "Edit info",
     deleteAccount: "Delete Account",
     deleteDescription: "Remove from the local account list",
@@ -481,6 +494,13 @@ function SortableProfileRow({
   );
 }
 
+function getAppWindow() {
+  if (!("__TAURI_INTERNALS__" in window)) {
+    return null;
+  }
+  return getCurrentWindow();
+}
+
 function App() {
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -496,6 +516,7 @@ function App() {
   const [busyProfile, setBusyProfile] = useState("");
   const [activePage, setActivePage] = useState<AppPage>("accounts");
   const [draggingProfileName, setDraggingProfileName] = useState<string | null>(null);
+  const [windowMaximized, setWindowMaximized] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [draftSettings, setDraftSettings] = useState<AppSettings>(defaultSettings);
   const latestSettingsRef = useRef<AppSettings>(defaultSettings);
@@ -573,6 +594,60 @@ function App() {
   useEffect(() => {
     profilesRef.current = profiles;
   }, [profiles]);
+
+  useEffect(() => {
+    const appWindow = getAppWindow();
+    if (!appWindow) {
+      return;
+    }
+
+    let disposed = false;
+    const syncMaximized = () => {
+      appWindow
+        .isMaximized()
+        .then((maximized) => {
+          if (!disposed) {
+            setWindowMaximized(maximized);
+          }
+        })
+        .catch(() => undefined);
+    };
+
+    syncMaximized();
+    const unlisten = appWindow.onResized(syncMaximized);
+    return () => {
+      disposed = true;
+      unlisten.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, []);
+
+  function startWindowDrag(event: MouseEvent<HTMLElement>) {
+    if (event.button !== 0 || event.detail > 1) {
+      return;
+    }
+    getAppWindow()?.startDragging().catch(() => undefined);
+  }
+
+  async function toggleWindowMaximize() {
+    const appWindow = getAppWindow();
+    if (!appWindow) {
+      return;
+    }
+
+    await appWindow.toggleMaximize().catch(() => undefined);
+    appWindow
+      .isMaximized()
+      .then(setWindowMaximized)
+      .catch(() => undefined);
+  }
+
+  function minimizeWindow() {
+    getAppWindow()?.minimize().catch(() => undefined);
+  }
+
+  function closeWindow() {
+    getAppWindow()?.close().catch(() => undefined);
+  }
 
   function openAddModal() {
     setEditingProfile(null);
@@ -930,6 +1005,27 @@ function App() {
 
   return (
     <main className="appShell accountsOnly">
+      <div className="windowTitleBar">
+        <div className="titleDragSurface" onMouseDown={startWindowDrag} onDoubleClick={toggleWindowMaximize}>
+          <span className="windowTitleText">Git Account Switcher</span>
+        </div>
+        <div className="windowControls" aria-label="Window controls">
+          <button className="windowControl" type="button" onClick={minimizeWindow} title={text.minimizeWindow}>
+            <Minus size={14} />
+          </button>
+          <button
+            className="windowControl"
+            type="button"
+            onClick={toggleWindowMaximize}
+            title={windowMaximized ? text.restoreWindow : text.maximizeWindow}
+          >
+            {windowMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+          </button>
+          <button className="windowControl close" type="button" onClick={closeWindow} title={text.closeWindow}>
+            <X size={15} />
+          </button>
+        </div>
+      </div>
       <Card className="headLine">
         <CardContent className="headLineContent">
           <div className="brandCluster">

@@ -14,11 +14,13 @@
       {
         "title": "Git Account Switcher",
         "width": 760,
-        "height": 540,
+        "height": 580,
         "minWidth": 750,
-        "minHeight": 520,
+        "minHeight": 560,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "decorations": false,
+        "shadow": true
       }
     ],
     "security": {

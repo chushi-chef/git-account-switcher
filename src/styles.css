@@ -324,7 +324,7 @@ body,
 
 body {
   margin: 0;
-  min-width: 620px;
+  min-width: 750px;
   background: var(--background);
   color: var(--ink);
   font-family: var(--font-sans);
@@ -374,13 +374,81 @@ input {
 .appShell.accountsOnly {
   position: relative;
   display: grid;
-  grid-template-rows: 54px 1fr 24px;
+  grid-template-rows: 42px 56px minmax(0, 1fr) 24px;
   gap: 8px;
-  width: min(100vw, 760px);
-  height: min(100dvh, 540px);
-  min-height: 460px;
+  width: 100vw;
+  height: 100dvh;
+  min-width: 750px;
+  min-height: 560px;
   margin: 0 auto;
-  padding: 12px;
+  padding: 0 12px 12px;
+}
+
+.windowTitleBar {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  height: 42px;
+  margin: 0 -12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: color-mix(in oklch, var(--paper) 88%, var(--background) 12%);
+  box-shadow: var(--inner-highlight);
+  user-select: none;
+  -webkit-user-select: none;
+  backdrop-filter: blur(18px) saturate(1.02);
+}
+
+.titleDragSurface {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  align-items: center;
+  padding: 0 12px;
+}
+
+.windowTitleText {
+  overflow: hidden;
+  color: var(--muted-ink);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.windowControls {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  gap: 2px;
+  padding: 0 7px;
+}
+
+.windowControl {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 30px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-ink);
+  cursor: default;
+  transition:
+    background-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.windowControl:hover {
+  background: var(--paper-subtle);
+  color: var(--ink);
+}
+
+.windowControl.close:hover {
+  background: var(--destructive);
+  color: var(--destructive-foreground);
 }
 
 .headLine,
@@ -389,6 +457,8 @@ input {
 .statusBar {
   position: relative;
   z-index: 1;
+  justify-self: center;
+  width: min(100%, 760px);
   border-color: var(--line);
   background: var(--paper);
   box-shadow: var(--shadow-soft), var(--inner-highlight);

@@ -26,9 +26,6 @@ const mockProfiles: Profile[] = [
 let mockSettings: AppSettings = {
   language: "zh-CN",
   theme: "system",
-  updateCheckTimeoutMs: 10000,
-  updateDownloadTimeoutMs: 20000,
-  updateProxy: "",
 };
 
 export async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -77,6 +74,9 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   if (command === "save_settings") {
     mockSettings = args?.settings as AppSettings;
     return ({ actions: ["Saved settings."], changed: true } satisfies ActionReport) as T;
+  }
+  if (command === "detect_network_proxy") {
+    return null as T;
   }
   if (command === "export_profiles") {
     return ({ actions: ["Exported profiles."], changed: false } satisfies ActionReport) as T;

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::os::windows::process::CommandExt;
 use std::{
     collections::BTreeMap,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
@@ -125,12 +125,6 @@ enum ProfilesImport {
 struct AppSettings {
     language: String,
     theme: String,
-    #[serde(default = "default_update_check_timeout_ms")]
-    update_check_timeout_ms: u64,
-    #[serde(default = "default_update_download_timeout_ms")]
-    update_download_timeout_ms: u64,
-    #[serde(default)]
-    update_proxy: String,
 }
 
 impl Default for AppSettings {
@@ -138,19 +132,8 @@ impl Default for AppSettings {
         Self {
             language: "zh-CN".into(),
             theme: "system".into(),
-            update_check_timeout_ms: default_update_check_timeout_ms(),
-            update_download_timeout_ms: default_update_download_timeout_ms(),
-            update_proxy: String::new(),
         }
     }
-}
-
-fn default_update_check_timeout_ms() -> u64 {
-    10_000
-}
-
-fn default_update_download_timeout_ms() -> u64 {
-    20_000
 }
 
 fn home_dir() -> AppResult<PathBuf> {
@@ -425,30 +408,158 @@ fn validate_settings(settings: &AppSettings) -> AppResult<()> {
         }
     }
 
-    if !(3_000..=120_000).contains(&settings.update_check_timeout_ms) {
-        return Err(AppError::Message(
-            "Update check timeout must be between 3000 and 120000 ms.".into(),
-        ));
-    }
-
-    if !(5_000..=300_000).contains(&settings.update_download_timeout_ms) {
-        return Err(AppError::Message(
-            "Update download timeout must be between 5000 and 300000 ms.".into(),
-        ));
-    }
-
-    let proxy = settings.update_proxy.trim();
-    if !proxy.is_empty()
-        && !proxy.starts_with("http://")
-        && !proxy.starts_with("https://")
-        && !proxy.starts_with("socks5://")
-    {
-        return Err(AppError::Message(
-            "Update proxy must start with http://, https://, or socks5://.".into(),
-        ));
-    }
-
     Ok(())
+}
+
+fn command_text(program: &str, args: &[&str]) -> Option<String> {
+    let mut command = Command::new(program);
+    command.args(args);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8(output.stdout).ok()
+}
+
+fn normalize_proxy_url(value: &str, default_scheme: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches('"').trim_matches('\'');
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("direct") {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("socks5://")
+    {
+        return Some(trimmed.to_string());
+    }
+    if lower.contains("://") || !trimmed.contains(':') {
+        return None;
+    }
+    Some(format!("{}://{}", default_scheme, trimmed))
+}
+
+fn env_proxy_candidate() -> Option<String> {
+    for key in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        if let Ok(value) = env::var(key) {
+            if let Some(proxy) = normalize_proxy_url(&value, "http") {
+                return Some(proxy);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn registry_value(name: &str) -> Option<String> {
+    let output = command_text(
+        "reg",
+        &[
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v",
+            name,
+        ],
+    )?;
+
+    output
+        .lines()
+        .find(|line| line.contains(name))
+        .and_then(|line| line.split_whitespace().last())
+        .map(str::to_string)
+}
+
+#[cfg(windows)]
+fn windows_proxy_candidate() -> Option<String> {
+    let enabled = registry_value("ProxyEnable")?;
+    let enabled = enabled.eq_ignore_ascii_case("0x1") || enabled == "1";
+    if !enabled {
+        return None;
+    }
+
+    let server = registry_value("ProxyServer")?;
+    if server.contains('=') {
+        let mut https = None;
+        let mut http = None;
+        let mut socks = None;
+        for item in server.split(';') {
+            let Some((kind, value)) = item.split_once('=') else {
+                continue;
+            };
+            match kind.trim().to_ascii_lowercase().as_str() {
+                "https" => https = normalize_proxy_url(value, "http"),
+                "http" => http = normalize_proxy_url(value, "http"),
+                "socks" | "socks5" => socks = normalize_proxy_url(value, "socks5"),
+                _ => {}
+            }
+        }
+        return https.or(http).or(socks);
+    }
+
+    normalize_proxy_url(&server, "http")
+}
+
+#[cfg(not(windows))]
+fn windows_proxy_candidate() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn macos_proxy_candidate() -> Option<String> {
+    let output = command_text("scutil", &["--proxy"])?;
+    let mut values = BTreeMap::new();
+    for line in output.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        values.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+    }
+
+    let enabled = |key: &str| values.get(key).is_some_and(|value| value == "1");
+    let host_port = |host_key: &str, port_key: &str, scheme: &str| {
+        let host = values.get(host_key)?.trim();
+        let port = values.get(port_key)?.trim();
+        normalize_proxy_url(&format!("{}:{}", host, port), scheme)
+    };
+
+    if enabled("httpsenable") {
+        if let Some(proxy) = host_port("httpsproxy", "httpsport", "http") {
+            return Some(proxy);
+        }
+    }
+    if enabled("httpenable") {
+        if let Some(proxy) = host_port("httpproxy", "httpport", "http") {
+            return Some(proxy);
+        }
+    }
+    if enabled("socksenable") {
+        if let Some(proxy) = host_port("socksproxy", "socksport", "socks5") {
+            return Some(proxy);
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_proxy_candidate() -> Option<String> {
+    None
+}
+
+fn system_proxy_candidate() -> Option<String> {
+    windows_proxy_candidate()
+        .or_else(macos_proxy_candidate)
+        .or_else(env_proxy_candidate)
 }
 
 fn git_output(args: &[&str], cwd: Option<&Path>) -> AppResult<String> {
@@ -1003,6 +1114,11 @@ fn save_settings(settings: AppSettings) -> Result<ActionReport, String> {
 }
 
 #[tauri::command]
+fn detect_network_proxy() -> Option<String> {
+    system_proxy_candidate()
+}
+
+#[tauri::command]
 fn list_profiles() -> Result<Vec<Profile>, String> {
     let profiles = load_profiles_inner().map_err(String::from)?;
     Ok(ordered_profiles(profiles))
@@ -1388,6 +1504,7 @@ pub fn run() {
             get_status,
             get_settings,
             save_settings,
+            detect_network_proxy,
             list_profiles,
             save_profile,
             list_profile_health,

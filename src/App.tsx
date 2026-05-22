@@ -87,10 +87,9 @@ type AppPage = "accounts" | "settings";
 const defaultSettings: AppSettings = {
   language: "zh-CN",
   theme: "system",
-  updateCheckTimeoutMs: 10000,
-  updateDownloadTimeoutMs: 20000,
-  updateProxy: "",
 };
+
+const updateRequestTimeoutMs = 7000;
 
 const languageOptions: Array<{ value: AppLanguage; label: string }> = [
   { value: "zh-CN", label: "简体中文" },
@@ -133,12 +132,6 @@ const messages = {
     theme: "主题",
     saving: "正在保存...",
     settingsPath: "保存位置",
-    updateNetwork: "更新网络",
-    updateCheckTimeout: "检查超时",
-    updateDownloadTimeout: "下载超时",
-    updateProxy: "代理地址",
-    updateProxyPlaceholder: "例如 http://127.0.0.1:7890",
-    milliseconds: "毫秒",
     accountData: "账号数据",
     importAccounts: "导入账号",
     exportAccounts: "导出账号",
@@ -149,7 +142,7 @@ const messages = {
     exportDone: "导出完成",
     checkUpdate: "检查更新",
     checkingUpdate: "正在检查更新...",
-    checkingUpdateDescription: "正在连接 GitHub Release。中国境内网络如果代理没有接管 GitHub，可能会超时。",
+    checkingUpdateDescription: "正在连接 GitHub Release。每次请求都会自动检测当前系统代理。",
     downloadingUpdate: "正在下载更新...",
     downloadProgress: "下载进度",
     updateReady: "发现新版本",
@@ -213,12 +206,6 @@ const messages = {
     theme: "Theme",
     saving: "Saving...",
     settingsPath: "Saved at",
-    updateNetwork: "Update Network",
-    updateCheckTimeout: "Check timeout",
-    updateDownloadTimeout: "Download timeout",
-    updateProxy: "Proxy URL",
-    updateProxyPlaceholder: "e.g. http://127.0.0.1:7890",
-    milliseconds: "ms",
     accountData: "Account Data",
     importAccounts: "Import Accounts",
     exportAccounts: "Export Accounts",
@@ -229,7 +216,7 @@ const messages = {
     exportDone: "Export complete",
     checkUpdate: "Check for updates",
     checkingUpdate: "Checking for updates...",
-    checkingUpdateDescription: "Connecting to GitHub Releases. If GitHub traffic is not proxied, this may time out.",
+    checkingUpdateDescription: "Connecting to GitHub Releases. The current system proxy is detected for every request.",
     downloadingUpdate: "Downloading update...",
     downloadProgress: "Download progress",
     updateReady: "Update Available",
@@ -297,13 +284,7 @@ function normalizeSettings(settings: AppSettings): AppSettings {
   return {
     ...defaultSettings,
     ...settings,
-    updateProxy: settings.updateProxy || "",
   };
-}
-
-function optionalProxy(value: string) {
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
 }
 
 function isFullPath(value: string) {
@@ -920,6 +901,11 @@ function App() {
     }
   }
 
+  async function detectNetworkProxy() {
+    const proxy = await call<string | null>("detect_network_proxy");
+    return proxy?.trim() || undefined;
+  }
+
   async function checkForUpdates() {
     const runId = updateRunRef.current + 1;
     updateRunRef.current = runId;
@@ -929,9 +915,10 @@ function App() {
     setUpdateProgress("");
     setUpdateOpen(true);
     try {
+      const proxy = await detectNetworkProxy();
       const nextUpdateInfo = await check({
-        timeout: settings.updateCheckTimeoutMs,
-        proxy: optionalProxy(settings.updateProxy),
+        timeout: updateRequestTimeoutMs,
+        proxy,
       });
       if (updateRunRef.current !== runId) {
         return;
@@ -957,6 +944,17 @@ function App() {
     setUpdateError("");
     setUpdateProgress("");
     try {
+      const proxy = await detectNetworkProxy();
+      const latestUpdateInfo = await check({
+        timeout: updateRequestTimeoutMs,
+        proxy,
+      });
+      if (!latestUpdateInfo) {
+        setUpdateInfo(null);
+        setUpdateError(text.upToDateDescription);
+        return;
+      }
+      setUpdateInfo(latestUpdateInfo);
       let downloaded = 0;
       let total = 0;
       const onEvent = (event: DownloadEvent) => {
@@ -976,7 +974,7 @@ function App() {
             : `${text.downloadProgress}: ${formatBytes(downloaded)}`,
         );
       };
-      await updateInfo.downloadAndInstall(onEvent, { timeout: settings.updateDownloadTimeoutMs });
+      await latestUpdateInfo.downloadAndInstall(onEvent, { timeout: updateRequestTimeoutMs });
       setUpdateOpen(false);
       await relaunch();
     } catch (error) {
@@ -1100,55 +1098,6 @@ function App() {
                   </Button>
                 ))}
               </div>
-            </div>
-
-            <div className="fieldStack">
-              <Label>{text.updateNetwork}</Label>
-              <div className="settingsGrid">
-                <div className="fieldStack">
-                  <div className="fieldTitle">
-                    <Label htmlFor="update-check-timeout">{text.updateCheckTimeout}</Label>
-                    <em>{text.milliseconds}</em>
-                  </div>
-                  <Input
-                    id="update-check-timeout"
-                    inputMode="numeric"
-                    value={draftSettings.updateCheckTimeoutMs}
-                    onChange={(event) =>
-                      setDraftSettings((current) => ({
-                        ...current,
-                        updateCheckTimeoutMs: Number(event.target.value) || defaultSettings.updateCheckTimeoutMs,
-                      }))
-                    }
-                    onBlur={() => applySettings({ updateCheckTimeoutMs: draftSettings.updateCheckTimeoutMs }).catch(() => undefined)}
-                  />
-                </div>
-                <div className="fieldStack">
-                  <div className="fieldTitle">
-                    <Label htmlFor="update-download-timeout">{text.updateDownloadTimeout}</Label>
-                    <em>{text.milliseconds}</em>
-                  </div>
-                  <Input
-                    id="update-download-timeout"
-                    inputMode="numeric"
-                    value={draftSettings.updateDownloadTimeoutMs}
-                    onChange={(event) =>
-                      setDraftSettings((current) => ({
-                        ...current,
-                        updateDownloadTimeoutMs: Number(event.target.value) || defaultSettings.updateDownloadTimeoutMs,
-                      }))
-                    }
-                    onBlur={() => applySettings({ updateDownloadTimeoutMs: draftSettings.updateDownloadTimeoutMs }).catch(() => undefined)}
-                  />
-                </div>
-              </div>
-              <Input
-                value={draftSettings.updateProxy}
-                onChange={(event) => setDraftSettings((current) => ({ ...current, updateProxy: event.target.value }))}
-                onBlur={() => applySettings({ updateProxy: draftSettings.updateProxy.trim() }).catch(() => undefined)}
-                placeholder={text.updateProxyPlaceholder}
-                aria-label={text.updateProxy}
-              />
             </div>
 
             <p className="settingsPath">

@@ -40,9 +40,6 @@ export interface AppStatus {
 export interface AppSettings {
   language: AppLanguage;
   theme: AppTheme;
-  updateCheckTimeoutMs: number;
-  updateDownloadTimeoutMs: number;
-  updateProxy: string;
 }
 
 export interface ActionReport {

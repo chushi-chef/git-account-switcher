@@ -422,17 +422,17 @@ input {
   display: flex;
   height: 100%;
   align-items: center;
-  gap: 2px;
-  padding: 0 7px;
+  gap: 0;
+  padding: 0;
 }
 
 .windowControl {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 30px;
+  width: 46px;
+  height: 100%;
   border: 0;
-  border-radius: 7px;
+  border-radius: 0;
   background: transparent;
   color: var(--muted-ink);
   cursor: default;
@@ -458,7 +458,7 @@ input {
   position: relative;
   z-index: 1;
   justify-self: center;
-  width: min(100%, 760px);
+  width: min(100%, 704px);
   border-color: var(--line);
   background: var(--paper);
   box-shadow: var(--shadow-soft), var(--inner-highlight);

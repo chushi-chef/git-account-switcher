@@ -556,13 +556,13 @@ input {
   max-height: 100%;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 14px;
+  padding: 18px;
   scrollbar-gutter: stable;
 }
 
 .settingsPageContent {
   display: grid;
-  gap: 14px;
+  gap: 22px;
 }
 
 .settingsHeader {
@@ -760,6 +760,10 @@ input {
   gap: 5px;
 }
 
+.settingsPageContent > .fieldStack {
+  gap: 9px;
+}
+
 .fieldTitle {
   display: flex;
   align-items: baseline;
@@ -785,10 +789,11 @@ input {
 }
 
 .segmentedControl {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
   gap: 6px;
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
   padding: 4px;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
@@ -797,8 +802,8 @@ input {
 }
 
 .segmentedControl button {
-  flex: 1 1 0;
-  min-width: 88px;
+  flex: 0 0 150px;
+  min-width: 150px;
 }
 
 .selectedOption {
@@ -818,9 +823,16 @@ input {
 }
 
 .dataActions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.dataActions button {
+  flex: 0 0 150px;
+  min-width: 150px;
 }
 
 .settingsNotice,

@@ -162,6 +162,40 @@ fn ensure_config_dir() -> AppResult<()> {
     Ok(())
 }
 
+fn sibling_path_with_suffix(path: &Path, suffix: &str) -> AppResult<PathBuf> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AppError::Message(format!("Invalid file path: {}", path.display())))?;
+    Ok(path.with_file_name(format!("{}{}", file_name, suffix)))
+}
+
+fn write_text_with_backup(path: &Path, content: &str) -> AppResult<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::Message(format!("Invalid file path: {}", path.display())))?;
+    fs::create_dir_all(parent)?;
+
+    let temp_path = sibling_path_with_suffix(path, ".git-account-switcher.tmp")?;
+    let backup_path = sibling_path_with_suffix(path, ".git-account-switcher.bak")?;
+    fs::write(&temp_path, content)?;
+
+    if path.exists() {
+        fs::copy(path, &backup_path)?;
+        fs::remove_file(path)?;
+    }
+
+    if let Err(error) = fs::rename(&temp_path, path) {
+        if backup_path.exists() && !path.exists() {
+            let _ = fs::copy(&backup_path, path);
+        }
+        let _ = fs::remove_file(&temp_path);
+        return Err(error.into());
+    }
+
+    Ok(())
+}
+
 fn load_profiles_inner() -> AppResult<BTreeMap<String, Profile>> {
     ensure_config_dir()?;
     let path = profiles_path()?;
@@ -184,16 +218,139 @@ fn save_profiles_inner(profiles: &BTreeMap<String, Profile>) -> AppResult<()> {
     Ok(())
 }
 
+fn is_line_safe(value: &str) -> bool {
+    !value
+        .chars()
+        .any(|ch| ch.is_control() || ch == '\u{2028}' || ch == '\u{2029}')
+}
+
+fn ensure_line_safe(label: &str, value: &str) -> AppResult<()> {
+    if !is_line_safe(value) {
+        return Err(AppError::Message(format!(
+            "{} must not contain line breaks or control characters.",
+            label
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_trimmed(label: &str, value: &str) -> AppResult<()> {
+    if value.trim() != value {
+        return Err(AppError::Message(format!(
+            "{} must not start or end with whitespace.",
+            label
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_len(label: &str, value: &str, max: usize) -> AppResult<()> {
+    if value.chars().count() > max {
+        return Err(AppError::Message(format!(
+            "{} is too long; maximum length is {} characters.",
+            label, max
+        )));
+    }
+    Ok(())
+}
+
+fn validate_simple_token(label: &str, value: &str) -> AppResult<()> {
+    ensure_line_safe(label, value)?;
+    ensure_trimmed(label, value)?;
+    ensure_len(label, value, 96)?;
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(AppError::Message(format!(
+            "{} may only contain ASCII letters, numbers, dots, dashes, and underscores.",
+            label
+        )));
+    }
+    Ok(())
+}
+
+fn validate_host_name(label: &str, value: &str) -> AppResult<()> {
+    ensure_line_safe(label, value)?;
+    ensure_trimmed(label, value)?;
+    ensure_len(label, value, 253)?;
+    if value.is_empty()
+        || value.starts_with('.')
+        || value.ends_with('.')
+        || value.contains("..")
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '.'))
+    {
+        return Err(AppError::Message(format!(
+            "{} must be a plain host name such as github.com.",
+            label
+        )));
+    }
+    Ok(())
+}
+
+fn validate_ssh_key_path(value: &str) -> AppResult<()> {
+    ensure_line_safe("SSH key path", value)?;
+    ensure_trimmed("SSH key path", value)?;
+    ensure_len("SSH key path", value, 512)?;
+    if value.is_empty() || value.starts_with('-') {
+        return Err(AppError::Message(
+            "SSH key path must be a non-empty file path.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_optional_nonempty<F>(label: &str, value: Option<&str>, validator: F) -> AppResult<()>
+where
+    F: Fn(&str) -> AppResult<()>,
+{
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        validator(value).map_err(|error| AppError::Message(format!("{}: {}", label, error)))?;
+    }
+    Ok(())
+}
+
 fn validate_profile(profile: &Profile) -> AppResult<()> {
     if profile.name.trim().is_empty() {
         return Err(AppError::Message("Profile name is required.".into()));
     }
+    validate_simple_token("Profile name", &profile.name)?;
+
     if profile.git_user_name.trim().is_empty() {
         return Err(AppError::Message("Git user name is required.".into()));
     }
+    ensure_line_safe("Git user name", &profile.git_user_name)?;
+    ensure_len("Git user name", profile.git_user_name.trim(), 128)?;
+
     if profile.git_email.trim().is_empty() {
         return Err(AppError::Message("Git email is required.".into()));
     }
+    ensure_line_safe("Git email", &profile.git_email)?;
+    ensure_trimmed("Git email", &profile.git_email)?;
+    ensure_len("Git email", &profile.git_email, 254)?;
+    if !profile.git_email.contains('@')
+        || profile.git_email.split('@').any(|part| part.is_empty())
+        || profile.git_email.chars().any(char::is_whitespace)
+    {
+        return Err(AppError::Message("Git email format is invalid.".into()));
+    }
+
+    validate_optional_nonempty("GitHub user", Some(&profile.git_hub_user), |value| {
+        validate_simple_token("GitHub user", value)
+    })?;
+    validate_optional_nonempty("Platform host", profile.platform_host.as_deref(), |value| {
+        validate_host_name("Platform host", value)
+    })?;
+    validate_optional_nonempty("SSH host", profile.ssh_host.as_deref(), |value| {
+        validate_simple_token("SSH host", value)
+    })?;
+    validate_optional_nonempty("SSH key path", profile.ssh_key_path.as_deref(), |value| {
+        validate_ssh_key_path(value)
+    })?;
+
     if profile.protocol != "ssh" && profile.protocol != "https" {
         return Err(AppError::Message("Protocol must be ssh or https.".into()));
     }
@@ -623,10 +780,12 @@ fn repo_status(path: &Path) -> RepoStatus {
 
 fn profile_or_fail(name: &str) -> AppResult<Profile> {
     let profiles = load_profiles_inner()?;
-    profiles
+    let profile = profiles
         .get(name)
         .cloned()
-        .ok_or_else(|| AppError::Message(format!("Profile '{}' was not found.", name)))
+        .ok_or_else(|| AppError::Message(format!("Profile '{}' was not found.", name)))?;
+    validate_profile(&profile)?;
+    Ok(profile)
 }
 
 fn expand_home(path: &str) -> AppResult<PathBuf> {
@@ -639,14 +798,45 @@ fn expand_home(path: &str) -> AppResult<PathBuf> {
     Ok(PathBuf::from(path))
 }
 
+fn unquote_ssh_value(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    }
+}
+
+fn ssh_config_value(value: &str) -> String {
+    if value
+        .chars()
+        .any(|ch| ch.is_whitespace() || matches!(ch, '"' | '\''))
+    {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
 fn normalize_key_path(path: &str) -> AppResult<String> {
-    let expanded = expand_home(path)?;
-    Ok(expanded
+    let expanded = expand_home(unquote_ssh_value(path))?;
+    let normalized = expanded
         .display()
         .to_string()
         .replace('\\', "/")
         .trim_end_matches('/')
-        .to_lowercase())
+        .to_string();
+    #[cfg(windows)]
+    {
+        Ok(normalized.to_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(normalized)
+    }
 }
 
 fn slugify(value: &str) -> String {
@@ -781,17 +971,20 @@ fn set_directive(
     key: &str,
     value: &str,
 ) -> usize {
-    for index in (start + 1)..end {
+    let existing_index = ((start + 1)..end).find(|&index| {
         let trimmed = lines[index].trim();
         let directive = trimmed
             .split_once(char::is_whitespace)
             .map(|(directive, _)| directive)
             .unwrap_or(trimmed);
-        if directive.eq_ignore_ascii_case(key) {
-            lines[index] = format!("    {} {}", key, value);
-            return end;
-        }
+        directive.eq_ignore_ascii_case(key)
+    });
+
+    if let Some(index) = existing_index {
+        lines[index] = format!("    {} {}", key, value);
+        return end;
     }
+
     lines.insert(end, format!("    {} {}", key, value));
     end + 1
 }
@@ -921,7 +1114,13 @@ fn switch_ssh_identity_inner(
         let mut end = target_end;
         end = set_directive(&mut lines, target_start, end, "HostName", &platform_host);
         end = set_directive(&mut lines, target_start, end, "User", "git");
-        let _ = set_directive(&mut lines, target_start, end, "IdentityFile", key_path);
+        let _ = set_directive(
+            &mut lines,
+            target_start,
+            end,
+            "IdentityFile",
+            &ssh_config_value(key_path),
+        );
         actions.push(format!("Promoted {} to Host {}", key_path, platform_host));
     } else {
         if !lines.is_empty()
@@ -936,12 +1135,12 @@ fn switch_ssh_identity_inner(
             format!("Host {}", platform_host),
             format!("    HostName {}", platform_host),
             "    User git".to_string(),
-            format!("    IdentityFile {}", key_path),
+            format!("    IdentityFile {}", ssh_config_value(key_path)),
         ]);
         actions.push(format!("Created Host {} for {}", platform_host, key_path));
     }
 
-    fs::write(ssh_config, lines.join("\n") + "\n")?;
+    write_text_with_backup(&ssh_config, &(lines.join("\n") + "\n"))?;
     Ok(ActionReport {
         actions,
         changed: true,
@@ -972,14 +1171,22 @@ fn ensure_ssh_host_inner(profile: &Profile, what_if: bool) -> AppResult<ActionRe
         .parent()
         .ok_or_else(|| AppError::Message("Could not resolve SSH directory.".into()))?;
     let key_path = expand_home(ssh_key_path)?;
+    let platform_host = profile
+        .platform_host
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("github.com");
     let block_start = format!("# BEGIN git-account-switcher {}", profile.name);
     let block_end = format!("# END git-account-switcher {}", profile.name);
-    let block = vec![
+    let block = [
         block_start.clone(),
         format!("Host {}", ssh_host),
-        "    HostName github.com".into(),
+        format!("    HostName {}", platform_host),
         "    User git".into(),
-        format!("    IdentityFile {}", key_path.display()),
+        format!(
+            "    IdentityFile {}",
+            ssh_config_value(&key_path.display().to_string())
+        ),
         "    IdentitiesOnly yes".into(),
         block_end.clone(),
     ]
@@ -1026,7 +1233,7 @@ fn ensure_ssh_host_inner(profile: &Profile, what_if: bool) -> AppResult<ActionRe
     }
     new_content.push_str(&block);
     new_content.push('\n');
-    fs::write(ssh_config, new_content)?;
+    write_text_with_backup(&ssh_config, &new_content)?;
 
     Ok(ActionReport {
         actions,
@@ -1034,17 +1241,63 @@ fn ensure_ssh_host_inner(profile: &Profile, what_if: bool) -> AppResult<ActionRe
     })
 }
 
-fn owner_repo_from_remote(remote_url: &str) -> AppResult<String> {
-    let owner_repo = if let Some(rest) = remote_url.strip_prefix("git@") {
-        rest.split_once(':')
-            .map(|(_, repo)| repo.to_string())
-            .ok_or_else(|| AppError::Message(format!("Unsupported SSH remote: {}", remote_url)))?
+fn ssh_alias_points_to_platform(alias: &str, platform_host: &str) -> AppResult<bool> {
+    let Ok(raw) = fs::read_to_string(ssh_config_path()?) else {
+        return Ok(false);
+    };
+    let lines: Vec<String> = raw.lines().map(|line| line.to_string()).collect();
+    let Some((start, end)) = find_host_block(&lines, alias) else {
+        return Ok(false);
+    };
+    Ok(get_directive(&lines[start..end], "HostName")
+        .as_deref()
+        .is_some_and(|host| host.eq_ignore_ascii_case(platform_host)))
+}
+
+fn remote_host_matches_platform(host: &str, platform_host: &str) -> AppResult<bool> {
+    if host.eq_ignore_ascii_case(platform_host) {
+        return Ok(true);
+    }
+    ssh_alias_points_to_platform(host, platform_host)
+}
+
+fn validate_owner_repo(owner_repo: &str, remote_url: &str) -> AppResult<String> {
+    let trimmed = owner_repo.trim_end_matches('/').trim_end_matches(".git");
+    let parts: Vec<&str> = trimmed.split('/').collect();
+    if parts.len() != 2
+        || parts.iter().any(|part| part.is_empty())
+        || !parts[0]
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        || !parts[1]
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(AppError::Message(format!(
+            "Remote does not look like a GitHub owner/repo URL: {}",
+            remote_url
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn owner_repo_from_remote(remote_url: &str, platform_host: &str) -> AppResult<String> {
+    validate_host_name("Platform host", platform_host)?;
+    let (host, owner_repo) = if let Some(rest) = remote_url.strip_prefix("git@") {
+        let (host, repo) = rest
+            .split_once(':')
+            .ok_or_else(|| AppError::Message(format!("Unsupported SSH remote: {}", remote_url)))?;
+        (host, repo)
     } else if let Some(rest) = remote_url.strip_prefix("ssh://git@") {
-        rest.split_once('/')
-            .map(|(_, repo)| repo.to_string())
-            .ok_or_else(|| AppError::Message(format!("Unsupported SSH remote: {}", remote_url)))?
-    } else if let Some(rest) = remote_url.strip_prefix("https://github.com/") {
-        rest.to_string()
+        let (host, repo) = rest
+            .split_once('/')
+            .ok_or_else(|| AppError::Message(format!("Unsupported SSH remote: {}", remote_url)))?;
+        (host, repo)
+    } else if let Some(rest) = remote_url.strip_prefix("https://") {
+        let (host, repo) = rest.split_once('/').ok_or_else(|| {
+            AppError::Message(format!("Unsupported HTTPS remote: {}", remote_url))
+        })?;
+        (host, repo)
     } else {
         return Err(AppError::Message(format!(
             "Unsupported remote format: {}",
@@ -1052,20 +1305,26 @@ fn owner_repo_from_remote(remote_url: &str) -> AppResult<String> {
         )));
     };
 
-    let trimmed = owner_repo.trim_end_matches('/').trim_end_matches(".git");
-    if trimmed.split('/').count() < 2 {
+    if !remote_host_matches_platform(host, platform_host)? {
         return Err(AppError::Message(format!(
-            "Remote does not look like owner/repo: {}",
-            remote_url
+            "Remote host '{}' does not match platform host '{}'.",
+            host, platform_host
         )));
     }
-    Ok(trimmed.to_string())
+
+    validate_owner_repo(owner_repo, remote_url)
 }
 
 fn remote_for_profile(remote_url: &str, profile: &Profile) -> AppResult<String> {
-    let owner_repo = owner_repo_from_remote(remote_url)?;
+    validate_profile(profile)?;
+    let platform_host = profile
+        .platform_host
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("github.com");
+    let owner_repo = owner_repo_from_remote(remote_url, platform_host)?;
     if profile.protocol == "https" {
-        return Ok(format!("https://github.com/{}.git", owner_repo));
+        return Ok(format!("https://{}/{}.git", platform_host, owner_repo));
     }
 
     let ssh_host = profile
@@ -1377,6 +1636,7 @@ fn switch_global_identity(profile_name: String, what_if: bool) -> Result<ActionR
         .get(&profile_name)
         .cloned()
         .ok_or_else(|| format!("Profile '{}' was not found.", profile_name))?;
+    validate_profile(&profile).map_err(String::from)?;
     let all_profiles: Vec<Profile> = profiles.into_values().collect();
     let mut actions = vec![
         format!(
@@ -1421,14 +1681,14 @@ fn activate_profile(
     let mut actions = Vec::new();
     let mut changed = false;
 
-    if profile.protocol == "ssh" {
-        let report = ensure_ssh_host_inner(&profile, what_if).map_err(String::from)?;
-        actions.extend(report.actions);
-        changed |= report.changed;
-    }
-
     match scope.as_str() {
         "global" => {
+            if profile.protocol == "ssh" {
+                let report = ensure_ssh_host_inner(&profile, what_if).map_err(String::from)?;
+                actions.extend(report.actions);
+                changed |= report.changed;
+            }
+
             actions.push(format!(
                 "Set global Git identity to '{} <{}>'.",
                 profile.git_user_name, profile.git_email
@@ -1457,6 +1717,20 @@ fn activate_profile(
                 return Err(format!("Not a Git repository: {}", repo));
             }
 
+            let new_remote = if rewrite_remote {
+                let old_remote = git_output(&["remote", "get-url", "origin"], Some(repo_path))
+                    .map_err(String::from)?;
+                Some(remote_for_profile(&old_remote, &profile).map_err(String::from)?)
+            } else {
+                None
+            };
+
+            if profile.protocol == "ssh" {
+                let report = ensure_ssh_host_inner(&profile, what_if).map_err(String::from)?;
+                actions.extend(report.actions);
+                changed |= report.changed;
+            }
+
             actions.push(format!(
                 "Set repository Git identity in {}.",
                 repo_path.display()
@@ -1475,10 +1749,7 @@ fn activate_profile(
                 changed = true;
             }
 
-            if rewrite_remote {
-                let old_remote = git_output(&["remote", "get-url", "origin"], Some(repo_path))
-                    .map_err(String::from)?;
-                let new_remote = remote_for_profile(&old_remote, &profile).map_err(String::from)?;
+            if let Some(new_remote) = new_remote {
                 actions.push(format!("Rewrite origin remote to {}.", new_remote));
                 if !what_if {
                     git_output(
@@ -1494,6 +1765,91 @@ fn activate_profile(
     }
 
     Ok(ActionReport { actions, changed })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_profile() -> Profile {
+        Profile {
+            name: "chushi-chef".into(),
+            git_user_name: "chushi-chef".into(),
+            git_email: "12345678+chushi@users.noreply.github.com".into(),
+            git_hub_user: "chushi-chef".into(),
+            protocol: "ssh".into(),
+            platform_host: Some("github.com".into()),
+            ssh_host: Some("github-chushi".into()),
+            ssh_key_path: Some("C:\\Users\\me\\.ssh\\id_ed25519".into()),
+            pinned: Some(false),
+            sort_order: Some(0),
+        }
+    }
+
+    #[test]
+    fn validate_profile_rejects_ssh_config_injection() {
+        let mut profile = valid_profile();
+        profile.ssh_key_path = Some("~/.ssh/id_ed25519\nProxyCommand calc".into());
+        assert!(validate_profile(&profile).is_err());
+
+        let mut profile = valid_profile();
+        profile.ssh_host = Some("github-main\nHost *".into());
+        assert!(validate_profile(&profile).is_err());
+
+        let mut profile = valid_profile();
+        profile.platform_host = Some("github.com ProxyCommand=calc".into());
+        assert!(validate_profile(&profile).is_err());
+    }
+
+    #[test]
+    fn validate_profile_accepts_safe_key_paths_with_spaces() {
+        let mut profile = valid_profile();
+        profile.ssh_key_path = Some("C:\\Users\\Me Dev\\.ssh\\id_ed25519".into());
+        assert!(validate_profile(&profile).is_ok());
+        assert_eq!(
+            ssh_config_value(profile.ssh_key_path.as_deref().unwrap()),
+            "\"C:\\Users\\Me Dev\\.ssh\\id_ed25519\""
+        );
+    }
+
+    #[test]
+    fn remote_rewrite_rejects_non_platform_hosts() {
+        let mut profile = valid_profile();
+        profile.protocol = "https".into();
+        let error = remote_for_profile("https://gitlab.com/owner/repo.git", &profile)
+            .expect_err("non-platform hosts must be rejected");
+        assert!(error.to_string().contains("does not match platform host"));
+    }
+
+    #[test]
+    fn remote_rewrite_accepts_github_owner_repo() {
+        let mut profile = valid_profile();
+        profile.protocol = "https".into();
+        assert_eq!(
+            remote_for_profile("https://github.com/owner/repo.git", &profile).unwrap(),
+            "https://github.com/owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn write_text_with_backup_preserves_previous_content() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("git-account-switcher-test-{}", unique));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config");
+        fs::write(&path, "original\n").unwrap();
+
+        write_text_with_backup(&path, "next\n").unwrap();
+
+        let backup = sibling_path_with_suffix(&path, ".git-account-switcher.bak").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "next\n");
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "original\n");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 pub fn run() {

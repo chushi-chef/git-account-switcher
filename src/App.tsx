@@ -709,10 +709,10 @@ function App() {
       nextProfile.sshHost = editingProfile?.sshHost ?? null;
       nextProfile.pinned = editingProfile?.pinned ?? false;
       nextProfile.sortOrder = editingProfile?.sortOrder ?? null;
+      await call<ActionReport>("save_profile", { profile: nextProfile });
       if (editingProfile && editingProfile.name !== nextProfile.name) {
         await call<ActionReport>("remove_profile", { profileName: editingProfile.name });
       }
-      await call<ActionReport>("save_profile", { profile: nextProfile });
       closeModal();
       await refresh();
     } finally {

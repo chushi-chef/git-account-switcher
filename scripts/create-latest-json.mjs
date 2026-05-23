@@ -85,6 +85,14 @@ if (Object.keys(platforms).length === 0) {
   throw new Error("No signed updater artifacts were found. Run a signed `npm run tauri:build` first.");
 }
 
+if (!platforms["windows-x86_64"]) {
+  throw new Error("Missing signed Windows updater artifact.");
+}
+
+if (!platforms["darwin-x86_64"] && !platforms["darwin-aarch64"]) {
+  throw new Error("Missing signed macOS updater artifact.");
+}
+
 const manifest = {
   version,
   notes: process.env.RELEASE_NOTES || `Release ${tag}`,

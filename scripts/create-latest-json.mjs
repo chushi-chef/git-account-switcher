@@ -62,6 +62,49 @@ function newestFileDeep(dir, predicate) {
   return matches.sort((left, right) => basename(right).localeCompare(basename(left)))[0] ?? null;
 }
 
+function darwinPlatformFromName(name) {
+  const lower = name.toLowerCase();
+  if (lower.includes("aarch64") || lower.includes("arm64")) {
+    return "darwin-aarch64";
+  }
+  if (lower.includes("x64") || lower.includes("x86_64") || lower.includes("x86-64")) {
+    return "darwin-x86_64";
+  }
+  return null;
+}
+
+function macArchiveFor(platform) {
+  const explicitArchive = newestFileDeep(
+    bundleDir,
+    (name) => name.endsWith(".app.tar.gz") && darwinPlatformFromName(name) === platform,
+  );
+  if (explicitArchive) {
+    return explicitArchive;
+  }
+
+  const genericArchive = newestFileDeep(
+    bundleDir,
+    (name) => name.endsWith(".app.tar.gz") && !darwinPlatformFromName(name),
+  );
+  if (!genericArchive) {
+    return null;
+  }
+
+  const dmgPlatforms = new Set();
+  newestFileDeep(bundleDir, (name) => {
+    if (!name.endsWith(".dmg")) {
+      return false;
+    }
+    const detected = darwinPlatformFromName(name);
+    if (detected) {
+      dmgPlatforms.add(detected);
+    }
+    return false;
+  });
+
+  return dmgPlatforms.size === 1 && dmgPlatforms.has(platform) ? genericArchive : null;
+}
+
 const pickFile = process.env.BUNDLE_DIR ? newestFileDeep : newestFile;
 const windowsSetup = pickFile(join(bundleDir, "nsis"), (name) => name.endsWith("-setup.exe"))
   ?? newestFileDeep(bundleDir, (name) => name.endsWith("-setup.exe"));
@@ -69,14 +112,12 @@ if (windowsSetup) {
   addPlatform("windows-x86_64", windowsSetup);
 }
 
-const macIntel = pickFile(join(bundleDir, "macos"), (name) => name.endsWith(".app.tar.gz") && name.includes("x64"))
-  ?? newestFileDeep(bundleDir, (name) => name.endsWith(".app.tar.gz") && name.includes("x64"));
+const macIntel = macArchiveFor("darwin-x86_64");
 if (macIntel) {
   addPlatform("darwin-x86_64", macIntel);
 }
 
-const macApple = pickFile(join(bundleDir, "macos"), (name) => name.endsWith(".app.tar.gz") && name.includes("aarch64"))
-  ?? newestFileDeep(bundleDir, (name) => name.endsWith(".app.tar.gz") && name.includes("aarch64"));
+const macApple = macArchiveFor("darwin-aarch64");
 if (macApple) {
   addPlatform("darwin-aarch64", macApple);
 }

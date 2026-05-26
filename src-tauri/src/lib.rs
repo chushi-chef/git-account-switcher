@@ -1773,13 +1773,13 @@ mod tests {
 
     fn valid_profile() -> Profile {
         Profile {
-            name: "chushi-chef".into(),
-            git_user_name: "chushi-chef".into(),
-            git_email: "12345678+chushi@users.noreply.github.com".into(),
-            git_hub_user: "chushi-chef".into(),
+            name: "FuGuiZh".into(),
+            git_user_name: "FuGuiZh".into(),
+            git_email: "12345678+fuguizh@users.noreply.github.com".into(),
+            git_hub_user: "FuGuiZh".into(),
             protocol: "ssh".into(),
             platform_host: Some("github.com".into()),
-            ssh_host: Some("github-chushi".into()),
+            ssh_host: Some("github-fuguizh".into()),
             ssh_key_path: Some("C:\\Users\\me\\.ssh\\id_ed25519".into()),
             pinned: Some(false),
             sort_order: Some(0),

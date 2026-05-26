@@ -37,6 +37,31 @@ function cargoLockVersion() {
   return match?.[1] ?? null;
 }
 
+function manifestDefaultRepository() {
+  const raw = readText(join(root, "scripts", "create-latest-json.mjs"));
+  const match = raw.match(/RELEASE_REPOSITORY\s*\|\|\s*"([^"]+)"/);
+  return match?.[1] ?? null;
+}
+
+function repositoryFromUpdaterEndpoint(endpoint) {
+  try {
+    const url = new URL(endpoint);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (
+      url.hostname.toLowerCase() === "github.com" &&
+      parts.length >= 5 &&
+      parts[2] === "releases" &&
+      parts[3] === "latest" &&
+      parts[4] === "download"
+    ) {
+      return `${parts[0]}/${parts[1]}`;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 const packageJson = readJson(join(root, "package.json"));
 const packageLock = readJson(join(root, "package-lock.json"));
 const tauriConfig = readJson(join(root, "src-tauri", "tauri.conf.json"));
@@ -82,6 +107,18 @@ if (endpoint.includes("/releases/latest/download/latest.json")) {
   pass("Updater endpoint points to the latest release manifest.");
 } else {
   fail("Updater endpoint should point to releases/latest/download/latest.json.");
+}
+
+const updaterRepository = repositoryFromUpdaterEndpoint(endpoint);
+const manifestRepository = existsSync(join(root, "scripts", "create-latest-json.mjs"))
+  ? manifestDefaultRepository()
+  : null;
+if (updaterRepository && manifestRepository && updaterRepository.toLowerCase() === manifestRepository.toLowerCase()) {
+  pass(`Updater endpoint repository matches manifest repository ${manifestRepository}.`);
+} else {
+  fail(
+    `Updater endpoint repository (${updaterRepository || "unknown"}) must match manifest repository (${manifestRepository || "unknown"}).`,
+  );
 }
 
 if (existsSync(join(root, ".github", "workflows", "desktop-ci.yml"))) {
